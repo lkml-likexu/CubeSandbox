@@ -22,9 +22,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 20
-
-      - name: Detach HEAD to avoid branch-name conflict during PR fetch
-        run: git -C "${GITHUB_WORKSPACE}" checkout --detach HEAD
+          ref: ${{ github.sha }}
 
       - uses: anthropics/claude-code-action@v1
         env:
