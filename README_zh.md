@@ -269,9 +269,10 @@ with Sandbox.create(template=os.environ["CUBE_TEMPLATE_ID"]) as sandbox:
 我们欢迎各种形式的贡献——Bug 报告、功能建议、文档改进、代码提交。
 
 - **发现 Bug** —— <a href="https://github.com/tencentcloud/CubeSandbox/issues" target="_blank">在这里报告问题或提出建议</a>
-- **有新想法** — <a href="https://github.com/tencentcloud/CubeSandbox/discussions" target="_blank">提问交流与想法分享</a>
-- **想写代码？** —  查看我们的 <a href="./CONTRIBUTING.md" target="_blank">CONTRIBUTING.md</a> 贡献指南，了解如何提交Pull Requst。
-- **想聊聊天？** 扫描二维码，加入我们的微信交流群。
+- **有新想法** —— <a href="https://github.com/tencentcloud/CubeSandbox/discussions" target="_blank">提问交流与想法分享</a>
+- **想写代码？** —— 查看我们的 <a href="./CONTRIBUTING.md" target="_blank">CONTRIBUTING.md</a> 贡献指南，了解如何提交Pull Requst。
+- **想成为最终用户？** —— 点击<a href="https://wj.qq.com/s2/26499618/a9fc/" target="_blank">这里</a>填写用户调研。
+- **想聊聊天？** —— 扫描二维码，加入我们的微信交流群。
 
 
 ---
