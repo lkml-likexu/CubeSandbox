@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set-16c32g-containerd
     permissions:
       contents: read
 
@@ -37,6 +37,7 @@ jobs:
             bc \
             bison \
             build-essential \
+            cpio \
             file \
             flex \
             libelf-dev \
