@@ -228,7 +228,7 @@ For detailed metrics on startup latency and resource overhead, see the [Core Ope
   <em>⚡ Millisecond-level startup — watch the fast-start flow above.</em>
 </p>
 
-Cube Sandbox requires an **x86_64 Linux** environment with **KVM** support.
+Cube Sandbox requires a **Linux** environment with **KVM** support. **x86_64** is the primary, fully supported architecture; **aarch64 (arm64)** has preliminary support (also requires `/dev/kvm`).
 
 The guide walks you through everything in **four steps** — provisioning a server, installing Cube Sandbox, creating a sandbox template, and running your first agent code. No source build needed, up and running in minutes.
 

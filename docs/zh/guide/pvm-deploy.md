@@ -2,6 +2,10 @@
 
 > **适用场景：** 云服务器上 `/dev/kvm` 不可用（云服务商屏蔽了嵌套虚拟化）。如果你的机器已经支持 KVM，直接参阅[快速开始](./quickstart.md)或[本地构建部署](./self-build-deploy.md)即可。
 
+::: warning 仅支持 x86_64
+PVM **仅支持 x86_64**，目前**没有**计划将 PVM 移植到 aarch64 —— 在 arm64 机器上，需要使用本身就具备 `/dev/kvm` 的宿主（裸金属、物理机，或开启了嵌套虚拟化的云虚机，例如基于 [lima-vm](https://github.com/lima-vm/lima) 的 Apple Silicon 宿主机）。aarch64 的安装路径请参阅[裸金属 / 物理机部署](./bare-metal-deploy.md)。
+:::
+
 ::: warning 生产环境注意
 如果您计划在生产环境中使用 Cube Sandbox，请参阅[网络加固](./network-hardening.md)指南，在将服务暴露到不可信网络之前完成安全加固。
 :::
@@ -25,7 +29,7 @@ PVM 最初由论文 [《PVM: Efficient Shadow Paging for Deploying Secure Contai
 
 ## 前置条件
 
-- **x86_64** 架构的 Linux 服务器（云服务器或物理机均可）
+- **x86_64** 架构的 Linux 服务器（云服务器或物理机均可）—— **PVM 不支持 aarch64**
 - 有 **root 权限**
 - **无需 `/dev/kvm`**（安装 PVM 内核后由 PVM 提供 KVM 能力）
 - 其余要求与[快速开始](./quickstart.md#前置条件)相同（内存 ≥ 8 GB、XFS 或可用于 `/data/cubelet` 的分区等）

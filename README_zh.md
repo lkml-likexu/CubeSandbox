@@ -226,7 +226,7 @@ Cube Sandbox 是一款基于 RustVMM 与 KVM 构建的高性能、开箱即用�
   <em>⚡ 毫秒级启动 —— 观看上方快速启动流程演示。</em>
 </p>
 
-Cube Sandbox 需要一台支持 **KVM** 的 **x86_64 Linux** 环境。
+Cube Sandbox 需要一台支持 **KVM** 的 **Linux** 环境。**x86_64** 为主推、完整支持的架构，**aarch64（arm64）** 已具备初步支持（同样需要 `/dev/kvm`）。
 
 指南带你**四步**完成全部流程 —— 准备服务器、安装 Cube Sandbox、创建沙箱模板、运行第一段 Agent 代码。无需编译源码，几分钟即可上手。
 
