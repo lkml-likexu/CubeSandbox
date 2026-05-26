@@ -1831,6 +1831,10 @@ pub fn start(s: Arc<Mutex<Sandbox>>, server_address: &str) -> Result<TtrpcServer
         moniclock::Clock::new().elapsed().as_millis()
     );
 
+    Ok(server)
+}
+
+pub fn notify_vsock_server_ready() -> Result<()> {
     #[cfg(target_arch = "x86_64")]
     {
         let port: u16 = 0x680;
@@ -1885,7 +1889,7 @@ pub fn start(s: Arc<Mutex<Sandbox>>, server_address: &str) -> Result<TtrpcServer
         }
     }
 
-    Ok(server)
+    Ok(())
 }
 
 // This function updates the container namespaces configuration based on the
