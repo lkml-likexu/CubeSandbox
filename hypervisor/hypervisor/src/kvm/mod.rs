@@ -951,6 +951,10 @@ impl KvmHypervisor {
             return Err(hypervisor::HypervisorError::IncompatibleApiVersion);
         }
 
+        #[cfg(target_arch = "aarch64")]
+        let hypervisor_type = HypervisorType::KvmPvm;
+
+        #[cfg(not(target_arch = "aarch64"))]
         #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
         let mut hypervisor_type = HypervisorType::Kvm;
 
