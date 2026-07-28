@@ -1,6 +1,10 @@
 [Unit]
 Description=Cube Sandbox Redis container
-After=docker.service network-online.target
+# mysql and redis share the "support" compose project; starting their `up`
+# concurrently races on default-network creation and yields duplicate
+# same-name networks ("network support_default is ambiguous"). Serialize by
+# ordering redis after mysql.
+After=docker.service network-online.target cube-sandbox-mysql.service
 Requires=docker.service
 Wants=network-online.target
 ConditionPathExists=/usr/local/services/cubetoolbox/.one-click.env
