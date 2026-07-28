@@ -146,6 +146,7 @@ docker_rm_if_exists "${COREDNS_CONTAINER}"
 docker create \
   --name "${COREDNS_CONTAINER}" \
   --network host \
+  --user 0:0 \
   -v "${COREFILE_PATH}:/etc/coredns/Corefile:ro" \
   -v "${RESOLV_UPSTREAM_PATH}:/etc/resolv.conf:ro" \
   "${COREDNS_IMAGE}" \
