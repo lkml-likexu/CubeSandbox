@@ -193,6 +193,12 @@ cp env.example .env
 - `SDK_E2E_API_TIMEOUT`：CubeAPI 控制面请求超时，用于 preflight、诊断
   和清理，默认 `5` 秒；
 - `SDK_E2E_CREATE_TIMEOUT`：创建超时，默认 `120` 秒；
+- `SDK_E2E_CREATE_CAPACITY_RETRIES`：当调度器瞬时返回 `no more resource`
+  （错误码 `130597`）时，额外重试创建 sandbox 的次数，给刚释放的节点留出回收
+  时间，默认 `5`；设为 `0` 可关闭重试、遇到容量错误即失败；
+- `SDK_E2E_CREATE_CAPACITY_BACKOFF`：容量重试的基础退避秒数，按次指数增长，
+  默认 `2`；
+- `SDK_E2E_CREATE_CAPACITY_BACKOFF_MAX`：容量重试退避的上限秒数，默认 `30`；
 - `SDK_E2E_COMMAND_TIMEOUT`：命令超时，默认 `30` 秒；
 - `SDK_E2E_RUN_CODE_TIMEOUT`：代码执行超时，默认 `60` 秒；
 - `SDK_E2E_NETWORK_PROBE_TIMEOUT`：network policy 用例中的 TCP socket

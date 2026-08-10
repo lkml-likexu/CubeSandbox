@@ -18,6 +18,7 @@ sys.path.insert(0, str(SDK_COMPAT_ROOT))
 
 from adapters import create_adapter  # noqa: E402
 from framework.cleanup import safe_kill  # noqa: E402
+from framework.create_retry import create_with_capacity_retry  # noqa: E402
 from framework.capabilities import CODE_INTERPRETER, capabilities_for_backend  # noqa: E402
 from framework.config import SdkE2EConfig  # noqa: E402
 from framework.preflight import run_preflight  # noqa: E402
@@ -119,7 +120,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not config.getoption("--run-e2e"):
         skip = pytest.mark.skip(reason="live SDK E2E disabled; pass --run-e2e to run")
         for item in items:
-            item.add_marker(skip)
+            # Pure-logic unit tests (not marked ``e2e``) need no live environment
+            # and must still run on every gate, so only skip the live cases.
+            if item.get_closest_marker("e2e"):
+                item.add_marker(skip)
         return
     if volume_skip is None:
         return
@@ -302,11 +306,26 @@ def sdk_sandbox(
                 f"template_id={node_config.cube_template_id} "
                 f"nodeid={request.node.nodeid}"
             )
-            adapter = create_adapter(
-                sdk_backend,
-                node_config,
-                metadata=metadata,
-                create_options=create_options,
+
+            def _log_capacity_retry(attempt: int, delay: float, exc: BaseException) -> None:
+                _setup_log(
+                    f"scheduler out of capacity (no more resource) creating sandbox "
+                    f"backend={sdk_backend} nodeid={request.node.nodeid}; "
+                    f"retry {attempt}/{node_config.create_capacity_retries} "
+                    f"in {delay:.1f}s: {exc}"
+                )
+
+            adapter = create_with_capacity_retry(
+                lambda: create_adapter(
+                    sdk_backend,
+                    node_config,
+                    metadata=metadata,
+                    create_options=create_options,
+                ),
+                retries=node_config.create_capacity_retries,
+                backoff=node_config.create_capacity_backoff,
+                backoff_max=node_config.create_capacity_backoff_max,
+                on_retry=_log_capacity_retry,
             )
         except ImportError as exc:
             pytest.skip(str(exc))

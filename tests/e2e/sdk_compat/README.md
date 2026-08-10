@@ -212,6 +212,14 @@ Optional:
 - `SDK_E2E_API_TIMEOUT`: CubeAPI control-plane request timeout in seconds for
   preflight, diagnostics, and cleanup. Defaults to `5`.
 - `SDK_E2E_CREATE_TIMEOUT`: sandbox create timeout in seconds. Defaults to `120`.
+- `SDK_E2E_CREATE_CAPACITY_RETRIES`: extra sandbox-create attempts when the
+  scheduler transiently returns `no more resource` (error code `130597`),
+  giving the just-freed node time to be reclaimed. Defaults to `5`. Set to `0`
+  to disable and fail fast on the first capacity error.
+- `SDK_E2E_CREATE_CAPACITY_BACKOFF`: base backoff in seconds for capacity
+  retries; grows exponentially per attempt. Defaults to `2`.
+- `SDK_E2E_CREATE_CAPACITY_BACKOFF_MAX`: cap on the capacity-retry backoff in
+  seconds. Defaults to `30`.
 - `SDK_E2E_COMMAND_TIMEOUT`: command timeout in seconds. Defaults to `30`.
 - `SDK_E2E_RUN_CODE_TIMEOUT`: code execution timeout in seconds. Defaults to `60`.
 - `SDK_E2E_NETWORK_PROBE_TIMEOUT`: TCP probe socket timeout in seconds for

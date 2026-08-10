@@ -45,6 +45,9 @@ class SdkE2EConfig:
     volume_plugin_enabled: bool
     volume_driver: str
     volume_refcount_wait: int
+    create_capacity_retries: int
+    create_capacity_backoff: float
+    create_capacity_backoff_max: float
 
     @classmethod
     def from_env(
@@ -91,6 +94,15 @@ class SdkE2EConfig:
             volume_plugin_enabled=_bool_env("SDK_E2E_VOLUME_PLUGIN"),
             volume_driver=os.environ.get("SDK_E2E_VOLUME_DRIVER", "cos").strip() or "cos",
             volume_refcount_wait=int(os.environ.get("SDK_E2E_VOLUME_REFCOUNT_WAIT", "60")),
+            create_capacity_retries=int(
+                os.environ.get("SDK_E2E_CREATE_CAPACITY_RETRIES", "5")
+            ),
+            create_capacity_backoff=float(
+                os.environ.get("SDK_E2E_CREATE_CAPACITY_BACKOFF", "2")
+            ),
+            create_capacity_backoff_max=float(
+                os.environ.get("SDK_E2E_CREATE_CAPACITY_BACKOFF_MAX", "30")
+            ),
         )
 
     def env(self) -> dict[str, str]:
