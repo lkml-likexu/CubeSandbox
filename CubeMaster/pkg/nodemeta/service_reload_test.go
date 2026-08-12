@@ -20,6 +20,57 @@ func newTestService(snaps ...*NodeSnapshot) *service {
 	return s
 }
 
+// TestMergeIncomingHostFacts_PreservesModuleStateOnTransientEmpty locks in the
+// fail-open/churn guard: when a heartbeat reports empty KVM module state (a
+// transient /sys/module read failure or a kvm.ko mid-reload), the last-known
+// module fingerprint + taint must be preserved rather than clobbered — otherwise
+// the taint gate silently disables for that window and the DB churns.
+func TestMergeIncomingHostFacts_PreservesModuleStateOnTransientEmpty(t *testing.T) {
+	prev := &HostFacts{
+		CPUIDHash:            "sha256:x86",
+		HostKernelRelease:    "5.15.0",
+		KVMModuleFingerprint: "sha256:kvmmod",
+		KVMModuleTaint:       "O",
+	}
+	// Fresh heartbeat: static facts present, module state dropped to empty.
+	incoming := &HostFacts{
+		CPUIDHash:         "sha256:x86",
+		HostKernelRelease: "5.15.0",
+	}
+	merged := mergeIncomingHostFacts(prev, incoming)
+	if merged.KVMModuleFingerprint != "sha256:kvmmod" || merged.KVMModuleTaint != "O" {
+		t.Fatalf("transient-empty module state must retain previous value, got fp=%q taint=%q",
+			merged.KVMModuleFingerprint, merged.KVMModuleTaint)
+	}
+	// It must not mutate the previous snapshot in place.
+	if incoming.KVMModuleTaint != "" {
+		t.Fatal("merge must not mutate the incoming facts")
+	}
+}
+
+// A real module-state change (non-empty incoming) must be adopted, not masked by
+// the transient-empty guard.
+func TestMergeIncomingHostFacts_AdoptsRealModuleChange(t *testing.T) {
+	prev := &HostFacts{KVMModuleFingerprint: "sha256:old", KVMModuleTaint: ""}
+	incoming := &HostFacts{KVMModuleFingerprint: "sha256:new", KVMModuleTaint: "E"}
+	merged := mergeIncomingHostFacts(prev, incoming)
+	if merged.KVMModuleFingerprint != "sha256:new" || merged.KVMModuleTaint != "E" {
+		t.Fatalf("real module change must be adopted, got fp=%q taint=%q",
+			merged.KVMModuleFingerprint, merged.KVMModuleTaint)
+	}
+}
+
+// With no previous facts there is nothing to preserve; empty incoming module
+// state stays empty.
+func TestMergeIncomingHostFacts_NoPrevKeepsIncoming(t *testing.T) {
+	incoming := &HostFacts{CPUIDHash: "sha256:x86", HostKernelRelease: "5.15.0"}
+	merged := mergeIncomingHostFacts(nil, incoming)
+	if merged.KVMModuleFingerprint != "" || merged.KVMModuleTaint != "" {
+		t.Fatalf("no-prev merge must keep incoming module state, got fp=%q taint=%q",
+			merged.KVMModuleFingerprint, merged.KVMModuleTaint)
+	}
+}
+
 func TestApplyReloadResultUpdatesRegistrationFields(t *testing.T) {
 	s := newTestService(&NodeSnapshot{
 		NodeID:       "node-a",
@@ -135,6 +186,121 @@ func TestApplyReloadResultTakesDBHeartbeatWhenFresher(t *testing.T) {
 	}
 	if !snap.ReportedReady {
 		t.Fatal("ReportedReady not updated from DB")
+	}
+}
+
+func TestApplyReloadResultAdoptsDBHostFactsWhenHeartbeatFresher(t *testing.T) {
+	oldTime := time.Now().Add(-10 * time.Second)
+	newTime := time.Now()
+
+	s := newTestService(&NodeSnapshot{
+		NodeID:        "node-hf",
+		HeartbeatTime: oldTime,
+		HostFacts:     &HostFacts{CPUIDHash: "sha256:stale"},
+	})
+
+	next := map[string]*NodeSnapshot{
+		"node-hf": {
+			NodeID:        "node-hf",
+			HeartbeatTime: newTime,
+			HostFacts:     &HostFacts{CPUIDHash: "sha256:fresh"},
+		},
+	}
+	s.applyReloadResult(next)
+
+	s.mu.RLock()
+	snap := s.nodes["node-hf"]
+	s.mu.RUnlock()
+
+	if snap.HostFacts == nil || snap.HostFacts.CPUIDHash != "sha256:fresh" {
+		t.Fatalf("stale in-memory facts must yield to fresher DB facts, got %+v", snap.HostFacts)
+	}
+}
+
+// TestApplyReloadResultKeepsDirtyInMemoryHostFactsDespiteFresherHeartbeat
+// locks in the fix for the status/persist clock skew: the status HeartbeatTime
+// advances on every heartbeat, but host facts are only written to the DB when
+// they change (and the write may fail). If this replica holds facts pending a
+// persist (hostFactsDirty), the DB carries the *older* facts even when its
+// status heartbeat is newer, so adopting it would revert the pending value.
+func TestApplyReloadResultKeepsDirtyInMemoryHostFactsDespiteFresherHeartbeat(t *testing.T) {
+	oldTime := time.Now().Add(-10 * time.Second)
+	newTime := time.Now()
+
+	s := newTestService(&NodeSnapshot{
+		NodeID:         "node-hf-dirty",
+		HeartbeatTime:  oldTime,
+		HostFacts:      &HostFacts{CPUIDHash: "sha256:pending"},
+		hostFactsDirty: true,
+	})
+
+	next := map[string]*NodeSnapshot{
+		"node-hf-dirty": {
+			NodeID:        "node-hf-dirty",
+			HeartbeatTime: newTime, // status clock is newer...
+			HostFacts:     &HostFacts{CPUIDHash: "sha256:stale"},
+		},
+	}
+	s.applyReloadResult(next)
+
+	s.mu.RLock()
+	snap := s.nodes["node-hf-dirty"]
+	s.mu.RUnlock()
+
+	if snap.HostFacts == nil || snap.HostFacts.CPUIDHash != "sha256:pending" {
+		t.Fatalf("dirty in-memory facts must not be clobbered by stale DB facts under a newer status heartbeat, got %+v", snap.HostFacts)
+	}
+}
+
+func TestApplyReloadResultKeepsInMemoryHostFactsWhenHeartbeatNotNewer(t *testing.T) {
+	inMemoryTime := time.Now()
+	dbTime := inMemoryTime.Add(-5 * time.Second)
+
+	s := newTestService(&NodeSnapshot{
+		NodeID:        "node-hf2",
+		HeartbeatTime: inMemoryTime,
+		HostFacts:     &HostFacts{CPUIDHash: "sha256:fresh"},
+	})
+
+	next := map[string]*NodeSnapshot{
+		"node-hf2": {
+			NodeID:        "node-hf2",
+			HeartbeatTime: dbTime,
+			HostFacts:     &HostFacts{CPUIDHash: "sha256:stale"},
+		},
+	}
+	s.applyReloadResult(next)
+
+	s.mu.RLock()
+	snap := s.nodes["node-hf2"]
+	s.mu.RUnlock()
+
+	if snap.HostFacts == nil || snap.HostFacts.CPUIDHash != "sha256:fresh" {
+		t.Fatalf("stale DB facts must not clobber fresher in-memory facts, got %+v", snap.HostFacts)
+	}
+}
+
+func TestApplyReloadResultAdoptsDBHostFactsWhenMemoryEmpty(t *testing.T) {
+	s := newTestService(&NodeSnapshot{
+		NodeID:        "node-hf3",
+		HeartbeatTime: time.Now().Add(-time.Minute), // older than DB
+	})
+
+	next := map[string]*NodeSnapshot{
+		"node-hf3": {
+			NodeID:        "node-hf3",
+			HeartbeatTime: time.Now(),
+			HostFacts:     &HostFacts{CPUIDHash: "sha256:fromdb"},
+		},
+	}
+	s.applyReloadResult(next)
+
+	s.mu.RLock()
+	snap := s.nodes["node-hf3"]
+	s.mu.RUnlock()
+
+	if snap.HostFacts == nil || snap.HostFacts.CPUIDHash != "sha256:fromdb" {
+		t.Fatalf("empty memory must adopt DB facts, got %+v", snap.HostFacts)
 	}
 }
 
