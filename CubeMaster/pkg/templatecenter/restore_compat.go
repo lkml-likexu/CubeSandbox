@@ -7,11 +7,16 @@ package templatecenter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/nodemeta"
 )
+
+// ErrRestoreCompatNoFactors is returned when a bare-factor candidate-node query
+// carries no usable required facts (no cpuid_hash / host_kernel_release).
+var ErrRestoreCompatNoFactors = errors.New("restore-compat: no usable host facts supplied")
 
 // RestoreCompatReason enumerates the terminal verdicts that short-circuit a
 // dimension-by-dimension comparison (no usable data on one side).
@@ -19,6 +24,13 @@ const (
 	RestoreCompatReasonOriginFingerprintUnknown = "origin_fingerprint_unknown"
 	RestoreCompatReasonTargetNodeUnknown        = "target_node_unknown"
 )
+
+// queryCandidatesFn is a seam over nodemeta.QueryHostFactCandidates so
+// candidate-node enumeration can be stubbed in tests without a live DB. The
+// underlying query pushes the two required equality keys down to an indexed
+// SELECT; the taint gate and informational dimensions are still applied in-app
+// by listCompatibleNodes below.
+var queryCandidatesFn = nodemeta.QueryHostFactCandidates
 
 // RestoreCompatDimension is a single strict-equality comparison between the
 // snapshot's origin host (A) and the target node (B). Required=false means the
@@ -258,4 +270,122 @@ func kvmVersionString(v int) string {
 		return ""
 	}
 	return strconv.Itoa(v)
+}
+
+// CompatibleNode is one node's verdict against a set of origin host facts,
+// carrying its dimensions so a caller can diagnose *why* a node was rejected.
+type CompatibleNode struct {
+	NodeID     string                   `json:"node_id"`
+	NodeIP     string                   `json:"node_ip,omitempty"`
+	Compatible bool                     `json:"compatible"`
+	Reason     string                   `json:"reason,omitempty"`
+	Dimensions []RestoreCompatDimension `json:"dimensions,omitempty"`
+}
+
+// CompatibleNodesResult aggregates the per-node verdicts for a snapshot's (or a
+// bare factor set's) required host facts. Reason is set only when no comparison
+// could run at all (e.g. the origin fingerprint was unknown). Warning carries a
+// non-fatal caveat about the verdict's completeness (e.g. bare-factor mode
+// cannot evaluate the kvm_module_taint gate).
+type CompatibleNodesResult struct {
+	SnapshotID string           `json:"snapshot_id,omitempty"`
+	OriginNode string           `json:"origin_node,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
+	Warning    string           `json:"warning,omitempty"`
+	Nodes      []CompatibleNode `json:"nodes"`
+}
+
+// RestoreCompatWarnBareFactorPartialPolicy is attached to bare-factor
+// compatible-node results: the caller supplies only cpuid_hash +
+// host_kernel_release, so the origin's kvm_module_taint signal is unavailable
+// and the taint gate is not evaluated. A pool reported compatible here can still
+// be fully blocked in by-snapshot mode if the real snapshot's origin carries a
+// KVM-module taint. Operators must treat bare-factor verdicts as a partial
+// subset of the full policy.
+const RestoreCompatWarnBareFactorPartialPolicy = "bare-factor mode evaluates cpuid_hash and host_kernel_release only; the kvm_module_taint gate is not applied, so results are a partial subset of the by-snapshot policy"
+
+// ListCompatibleNodesForSnapshot returns every healthy node whose required host
+// facts match the snapshot's frozen origin facts, in a single call so callers
+// avoid N per-node restore-compat round-trips. It reuses the same judgment
+// functions as EvaluateSnapshotRestoreCompat, so the aggregate list can never
+// drift from the single-node verdict.
+func ListCompatibleNodesForSnapshot(ctx context.Context, snapshotID string, includeAll bool) (*CompatibleNodesResult, error) {
+	snapshotID = strings.TrimSpace(snapshotID)
+	info, err := GetSnapshotInfo(ctx, snapshotID, false)
+	if err != nil {
+		return nil, err
+	}
+	result := &CompatibleNodesResult{
+		SnapshotID: snapshotID,
+		OriginNode: info.OriginNodeID,
+		Nodes:      []CompatibleNode{},
+	}
+	origin := parseFrozenHostFacts(info.OriginHostFactsJSON)
+	if origin == nil {
+		result.Reason = RestoreCompatReasonOriginFingerprintUnknown
+		return result, nil
+	}
+	nodes, err := listCompatibleNodes(ctx, origin, includeAll)
+	if err != nil {
+		return nil, err
+	}
+	result.Nodes = nodes
+	return result, nil
+}
+
+// ListCompatibleNodesForFactors is the snapshot-less form: the caller supplies
+// the required host facts directly (e.g. for diagnosis or capacity planning).
+// The result carries RestoreCompatWarnBareFactorPartialPolicy because the caller
+// cannot supply the origin's kvm_module_taint, so the taint gate is not applied
+// and the verdict is a partial subset of the by-snapshot policy.
+func ListCompatibleNodesForFactors(ctx context.Context, factors *nodemeta.HostFacts, includeAll bool) (*CompatibleNodesResult, error) {
+	if factors == nil || factors.IsZero() {
+		return nil, ErrRestoreCompatNoFactors
+	}
+	nodes, err := listCompatibleNodes(ctx, factors, includeAll)
+	if err != nil {
+		return nil, err
+	}
+	return &CompatibleNodesResult{
+		Warning: RestoreCompatWarnBareFactorPartialPolicy,
+		Nodes:   nodes,
+	}, nil
+}
+
+// listCompatibleNodes runs the shared host-fact judgment against the candidate
+// nodes returned by the DB query. The query has already restricted the set to
+// healthy nodes with collected facts, and — when includeAll is false — to those
+// whose two required equality keys (cpuid_hash, host_kernel_release) match the
+// origin, so the common path evaluates only true candidates instead of the whole
+// fleet. The taint gate and informational dimensions are still applied here per
+// node via buildHostFactDimensions, so the aggregate verdict can never drift
+// from the single-node EvaluateSnapshotRestoreCompat: a node the SQL matched on
+// the required keys can still be rejected here for a suspicious kvm_module_taint.
+//
+// When includeAll is true the query returns every healthy node with facts and
+// each is reported with its dimensions so a caller can diagnose why a node was
+// rejected.
+func listCompatibleNodes(ctx context.Context, origin *nodemeta.HostFacts, includeAll bool) ([]CompatibleNode, error) {
+	candidates, err := queryCandidatesFn(ctx, origin.CPUIDHash, origin.HostKernelRelease, includeAll)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CompatibleNode, 0, len(candidates))
+	for _, c := range candidates {
+		if c == nil || c.HostFacts == nil {
+			continue
+		}
+		dims := buildHostFactDimensions(origin, c.HostFacts)
+		compatible := allRequiredDimensionsMatch(dims)
+		if !compatible && !includeAll {
+			continue
+		}
+		out = append(out, CompatibleNode{
+			NodeID:     c.NodeID,
+			NodeIP:     c.HostIP,
+			Compatible: compatible,
+			Dimensions: dims,
+		})
+	}
+	return out, nil
 }
