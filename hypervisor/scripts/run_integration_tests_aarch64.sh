@@ -71,16 +71,13 @@ build_virtiofsd() {
 
 validate_aarch64_images() {
     local custom_excludes="$CUSTOM_AARCH64_ARTIFACTS"
-    case ",$custom_excludes," in
-    *,bionic-server-cloudimg-arm64.img,*)
-        custom_excludes="$custom_excludes,bionic-server-cloudimg-arm64.raw,bionic-server-cloudimg-arm64.qcow2"
-        ;;
-    esac
-
     local checksums_filtered
     checksums_filtered=$(mktemp) || return 1
     while read -r checksum filename; do
         [ -z "$filename" ] && continue
+        case "$filename" in
+        *.img | *.raw) continue ;;
+        esac
         case ",$custom_excludes," in
         *,"$filename",*) ;;
         *) printf '%s  %s\n' "$checksum" "$filename" >> "$checksums_filtered" ;;
@@ -103,16 +100,10 @@ validate_aarch64_images() {
 
 require_aarch64_offline_workloads() {
     require_offline_workloads \
-        bionic-server-cloudimg-arm64.img \
-        bionic-server-cloudimg-arm64.raw \
         bionic-server-cloudimg-arm64.qcow2 \
-        focal-server-cloudimg-arm64-custom-20210929-0.raw \
         focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
-        focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw \
-        jammy-server-cloudimg-arm64-custom-20220329-0.raw \
         jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
         alpine-minirootfs-aarch64.tar.gz \
-        alpine_initramfs.img \
         cloud-hypervisor-static-aarch64 \
         Image \
         Image.gz \
@@ -143,52 +134,43 @@ update_workloads() {
             "$SPDK_DEPLOY_DIR/nvmf_tgt" \
             "$SPDK_DEPLOY_DIR/rpc.py"
         install_spdk_nvme
-        return
     fi
 
     local bionic_download_name="bionic-server-cloudimg-arm64.img"
-    acquire_workload \
-        "$bionic_download_name" \
-        "https://cloud-hypervisor.azureedge.net/$bionic_download_name" || return 1
-
     local bionic_raw_name="bionic-server-cloudimg-arm64.raw"
-    if [ ! -f "$WORKLOADS_DIR/$bionic_raw_name" ]; then
-        time qemu-img convert -p -f qcow2 -O raw \
-            "$WORKLOADS_DIR/$bionic_download_name" \
-            "$WORKLOADS_DIR/$bionic_raw_name" || return 1
-    fi
-
     local bionic_qcow2_name="bionic-server-cloudimg-arm64.qcow2"
-    if [ ! -f "$WORKLOADS_DIR/$bionic_qcow2_name" ]; then
-        time qemu-img convert -p -f raw -O qcow2 \
-            "$WORKLOADS_DIR/$bionic_raw_name" \
-            "$WORKLOADS_DIR/$bionic_qcow2_name" || return 1
-    fi
-
     local focal_raw_name="focal-server-cloudimg-arm64-custom-20210929-0.raw"
-    acquire_workload \
-        "$focal_raw_name" \
-        "https://cloud-hypervisor.azureedge.net/$focal_raw_name" || return 1
-
     local focal_qcow2_name="focal-server-cloudimg-arm64-custom-20210929-0.qcow2"
-    acquire_workload \
-        "$focal_qcow2_name" \
-        "https://cloud-hypervisor.azureedge.net/$focal_qcow2_name" || return 1
-
     local jammy_raw_name="jammy-server-cloudimg-arm64-custom-20220329-0.raw"
-    acquire_workload \
-        "$jammy_raw_name" \
-        "https://cloud-hypervisor.azureedge.net/$jammy_raw_name" || return 1
-
     local jammy_qcow2_name="jammy-server-cloudimg-arm64-custom-20220329-0.qcow2"
-    acquire_workload \
-        "$jammy_qcow2_name" \
-        "https://cloud-hypervisor.azureedge.net/$jammy_qcow2_name" || return 1
-
     local alpine_name="alpine-minirootfs-aarch64.tar.gz"
-    acquire_workload \
-        "$alpine_name" \
-        "http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/aarch64/alpine-minirootfs-3.11.3-aarch64.tar.gz" || return 1
+
+    if [ "${CH_OFFLINE:-false}" != "true" ]; then
+        if [ ! -f "$WORKLOADS_DIR/$bionic_qcow2_name" ]; then
+            if [ -n "${WORKLOADS_BASE_URL:-}" ]; then
+                acquire_workload "$bionic_qcow2_name" "" || return 1
+            else
+                acquire_workload \
+                    "$bionic_download_name" \
+                    "https://cloud-hypervisor.azureedge.net/$bionic_download_name" || return 1
+                time qemu-img convert -p -f qcow2 -O raw \
+                    "$WORKLOADS_DIR/$bionic_download_name" \
+                    "$WORKLOADS_DIR/$bionic_raw_name" || return 1
+                time qemu-img convert -p -f raw -O qcow2 \
+                    "$WORKLOADS_DIR/$bionic_raw_name" \
+                    "$WORKLOADS_DIR/$bionic_qcow2_name" || return 1
+            fi
+        fi
+        acquire_workload \
+            "$focal_qcow2_name" \
+            "https://cloud-hypervisor.azureedge.net/$focal_qcow2_name" || return 1
+        acquire_workload \
+            "$jammy_qcow2_name" \
+            "https://cloud-hypervisor.azureedge.net/$jammy_qcow2_name" || return 1
+        acquire_workload \
+            "$alpine_name" \
+            "http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/aarch64/alpine-minirootfs-3.11.3-aarch64.tar.gz" || return 1
+    fi
 
     case ",$CUSTOM_AARCH64_ARTIFACTS," in
     *,alpine-minirootfs-aarch64.tar.gz,*) ;;
@@ -199,6 +181,20 @@ update_workloads() {
         ) || return 1
         ;;
     esac
+
+    local image_pair
+    for image_pair in \
+        "$bionic_qcow2_name:$bionic_raw_name" \
+        "$focal_qcow2_name:$focal_raw_name" \
+        "$jammy_qcow2_name:$jammy_raw_name"; do
+        local qcow2_name=${image_pair%%:*}
+        local raw_name=${image_pair#*:}
+        if [ ! -f "$WORKLOADS_DIR/$raw_name" ]; then
+            time qemu-img convert -p -f qcow2 -O raw \
+                "$WORKLOADS_DIR/$qcow2_name" \
+                "$WORKLOADS_DIR/$raw_name" || return 1
+        fi
+    done
 
     local alpine_initramfs="$WORKLOADS_DIR/alpine_initramfs.img"
     if [ ! -f "$alpine_initramfs" ]; then
