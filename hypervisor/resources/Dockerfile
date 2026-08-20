@@ -4,6 +4,7 @@
 FROM ubuntu:20.04 as dev
 
 ARG TARGETARCH
+ARG APT_MIRROR_BASE=
 ARG RUST_TOOLCHAIN="1.77.0"
 ARG CLH_SRC_DIR="/cloud-hypervisor"
 ARG CLH_BUILD_DIR="$CLH_SRC_DIR/build"
@@ -13,6 +14,21 @@ ARG CARGO_GIT_REGISTRY_DIR="$CLH_BUILD_DIR/cargo_git_registry"
 ENV CARGO_HOME=/usr/local/rust
 ENV RUSTUP_HOME=$CARGO_HOME
 ENV PATH="$PATH:$CARGO_HOME/bin"
+
+RUN set -eux; \
+    if [ -n "${APT_MIRROR_BASE}" ]; then \
+        case "${APT_MIRROR_BASE}" in \
+            http://*) ;; \
+            *) echo "APT_MIRROR_BASE must be an http:// URL because CA certificates are not installed yet: ${APT_MIRROR_BASE}" >&2; exit 1;; \
+        esac; \
+        case "${APT_MIRROR_BASE}" in \
+            *[\$\`\"\;\!\&\|\\]*) echo "APT_MIRROR_BASE contains unsafe characters: ${APT_MIRROR_BASE}" >&2; exit 1;; \
+        esac; \
+        sed -i "s|http://archive.ubuntu.com/ubuntu|${APT_MIRROR_BASE}/ubuntu|g; \
+                s|http://security.ubuntu.com/ubuntu|${APT_MIRROR_BASE}/ubuntu|g; \
+                s|http://ports.ubuntu.com/ubuntu-ports|${APT_MIRROR_BASE}/ubuntu-ports|g" \
+            /etc/apt/sources.list; \
+    fi
 
 # Install all CI dependencies
 RUN apt-get update \

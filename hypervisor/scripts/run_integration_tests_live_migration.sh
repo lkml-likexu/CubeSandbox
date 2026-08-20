@@ -20,14 +20,14 @@ fi
 
 cp scripts/sha1sums-x86_64 $WORKLOADS_DIR
 
+require_offline_workloads \
+    focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
+    vmlinux || exit 1
+
 FOCAL_OS_IMAGE_NAME="focal-server-cloudimg-amd64-custom-20210609-0.qcow2"
 FOCAL_OS_IMAGE_URL="https://cloud-hypervisor.azureedge.net/$FOCAL_OS_IMAGE_NAME"
 FOCAL_OS_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_IMAGE_NAME"
-if [ ! -f "$FOCAL_OS_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $FOCAL_OS_IMAGE_URL || exit 1
-    popd
-fi
+acquire_workload "$FOCAL_OS_IMAGE_NAME" "$FOCAL_OS_IMAGE_URL" || exit 1
 
 FOCAL_OS_RAW_IMAGE_NAME="focal-server-cloudimg-amd64-custom-20210609-0.raw"
 FOCAL_OS_RAW_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_NAME"
@@ -37,37 +37,21 @@ if [ ! -f "$FOCAL_OS_RAW_IMAGE" ]; then
     popd
 fi
 
-pushd $WORKLOADS_DIR
-grep focal sha1sums-x86_64 | sha1sum --check
-if [ $? -ne 0 ]; then
-    echo "sha1sum validation of images failed, remove invalid images to fix the issue."
-    exit 1
-fi
-popd
+load_custom_x86_artifacts || exit 1
+case ",$CUSTOM_X86_ARTIFACTS," in
+*,focal-server-cloudimg-amd64-custom-20210609-0.qcow2,*) ;;
+*)
+    pushd "$WORKLOADS_DIR" || exit 1
+    grep focal sha1sums-x86_64 | sha1sum --check || {
+        echo "sha1sum validation of images failed, remove invalid images to fix the issue."
+        exit 1
+    }
+    popd || exit 1
+    ;;
+esac
 
-# Build custom kernel based on virtio-pmem and virtio-fs upstream patches
 VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
-
-LINUX_CUSTOM_DIR="$WORKLOADS_DIR/linux-custom"
-
-if [ ! -f "$VMLINUX_IMAGE" ]; then
-    SRCDIR=$PWD
-    pushd $WORKLOADS_DIR
-    time git clone --depth 1 "https://github.com/cloud-hypervisor/linux.git" -b "ch-5.15.12" $LINUX_CUSTOM_DIR
-    cp $SRCDIR/resources/linux-config-x86_64 $LINUX_CUSTOM_DIR/.config
-    popd
-fi
-
-if [ ! -f "$VMLINUX_IMAGE" ]; then
-    pushd $LINUX_CUSTOM_DIR
-    time make bzImage -j `nproc`
-    cp vmlinux $VMLINUX_IMAGE || exit 1
-    popd
-fi
-
-if [ -d "$LINUX_CUSTOM_DIR" ]; then
-    rm -rf $LINUX_CUSTOM_DIR
-fi
+acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1
 
 BUILD_TARGET="$(uname -m)-unknown-linux-${CH_LIBC}"
 CFLAGS=""
@@ -91,12 +75,22 @@ CH_RELEASE_NAME="cloud-hypervisor-static"
 cp -f target/$BUILD_TARGET/release/cube-hypervisor "$WORKLOADS_DIR"/"$CH_RELEASE_NAME" || exit 1
 chmod +x "$WORKLOADS_DIR"/"$CH_RELEASE_NAME"
 
+if [ "$prepare_offline" = "true" ]; then
+    cargo test $features --no-run --target $BUILD_TARGET
+    exit 0
+fi
+
 # Test ovs-dpdk relies on hugepages
 echo 6144 | sudo tee /proc/sys/vm/nr_hugepages
 sudo chmod a+rwX /dev/hugepages
 
 export RUST_BACKTRACE=1
-time cargo test $features "live_migration_parallel::$test_filter" -- ${test_binary_args[*]}
+parallel_test_args=()
+if [ -n "$test_threads" ]; then
+    parallel_test_args=(--test-threads="$test_threads")
+    echo "Running live migration parallel tests with $test_threads threads"
+fi
+time cargo test $features "live_migration_parallel::$test_filter" -- "${parallel_test_args[@]}" ${test_binary_args[*]}
 RES=$?
 
 # Run some tests in sequence since the result could be affected by other tests

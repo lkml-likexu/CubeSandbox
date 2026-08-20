@@ -36,31 +36,32 @@ fi
 
 cp scripts/sha1sums-x86_64 $WORKLOADS_DIR
 
-FW_URL=$(curl --silent https://api.github.com/repos/cloud-hypervisor/rust-hypervisor-firmware/releases/latest | grep "browser_download_url" | grep -o 'https://.*[^ "]')
-FW="$WORKLOADS_DIR/hypervisor-fw"
-if [ ! -f "$FW" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $FW_URL || exit 1
-    popd
-fi
+require_offline_workloads \
+    hypervisor-fw \
+    CLOUDHV.fd \
+    bionic-server-cloudimg-amd64.qcow2 \
+    focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
+    jammy-server-cloudimg-amd64-custom-20220329-0.qcow2 \
+    alpine-minirootfs-x86_64.tar.gz \
+    vmlinux \
+    virtiofsd || exit 1
 
-OVMF_FW_URL=$(curl --silent https://api.github.com/repos/cloud-hypervisor/edk2/releases/latest | grep "browser_download_url" | grep -o 'https://.*[^ "]')
-OVMF_FW="$WORKLOADS_DIR/CLOUDHV.fd"
-if [ ! -f "$OVMF_FW" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $OVMF_FW_URL || exit 1
-    popd
+FW="$WORKLOADS_DIR/hypervisor-fw"
+if [ ! -f "$FW" ] && [ -z "${WORKLOADS_BASE_URL:-}" ]; then
+    FW_URL=$(curl --fail --silent https://api.github.com/repos/cloud-hypervisor/rust-hypervisor-firmware/releases/latest | grep "browser_download_url" | grep -o 'https://.*[^ "]' | grep '/hypervisor-fw$')
 fi
+acquire_workload "hypervisor-fw" "${FW_URL:-}" || exit 1
+
+OVMF_FW="$WORKLOADS_DIR/CLOUDHV.fd"
+if [ ! -f "$OVMF_FW" ] && [ -z "${WORKLOADS_BASE_URL:-}" ]; then
+    OVMF_FW_URL=$(curl --fail --silent https://api.github.com/repos/cloud-hypervisor/edk2/releases/latest | grep "browser_download_url" | grep -o 'https://.*[^ "]' | grep '/CLOUDHV.fd$')
+fi
+acquire_workload "CLOUDHV.fd" "${OVMF_FW_URL:-}" || exit 1
 
 BIONIC_OS_IMAGE_NAME="bionic-server-cloudimg-amd64.qcow2"
 BIONIC_OS_IMAGE_URL="https://github.com/lisongqian/CubeSandbox/releases/download/ci/$BIONIC_OS_IMAGE_NAME.zip"
 BIONIC_OS_IMAGE="$WORKLOADS_DIR/$BIONIC_OS_IMAGE_NAME"
-if [ ! -f "$BIONIC_OS_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $BIONIC_OS_IMAGE_URL || exit 1
-    mv "$BIONIC_OS_IMAGE_NAME.zip" $BIONIC_OS_IMAGE_NAME
-    popd
-fi
+acquire_workload "$BIONIC_OS_IMAGE_NAME" "$BIONIC_OS_IMAGE_URL" || exit 1
 
 BIONIC_OS_RAW_IMAGE_NAME="bionic-server-cloudimg-amd64.raw"
 BIONIC_OS_RAW_IMAGE="$WORKLOADS_DIR/$BIONIC_OS_RAW_IMAGE_NAME"
@@ -74,12 +75,7 @@ fi
 FOCAL_OS_IMAGE_NAME="focal-server-cloudimg-amd64-custom-20210609-0.qcow2"
 FOCAL_OS_IMAGE_URL="https://github.com/lisongqian/CubeSandbox/releases/download/ci/$FOCAL_OS_IMAGE_NAME.zip"
 FOCAL_OS_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_IMAGE_NAME"
-if [ ! -f "$FOCAL_OS_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $FOCAL_OS_IMAGE_URL || exit 1
-    mv "$FOCAL_OS_IMAGE_NAME.zip" $FOCAL_OS_IMAGE_NAME
-    popd
-fi
+acquire_workload "$FOCAL_OS_IMAGE_NAME" "$FOCAL_OS_IMAGE_URL" || exit 1
 
 FOCAL_OS_RAW_IMAGE_NAME="focal-server-cloudimg-amd64-custom-20210609-0.raw"
 FOCAL_OS_RAW_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_NAME"
@@ -92,12 +88,7 @@ fi
 JAMMY_OS_IMAGE_NAME="jammy-server-cloudimg-amd64-custom-20220329-0.qcow2"
 JAMMY_OS_IMAGE_URL="https://github.com/lisongqian/CubeSandbox/releases/download/ci/$JAMMY_OS_IMAGE_NAME.zip"
 JAMMY_OS_IMAGE="$WORKLOADS_DIR/$JAMMY_OS_IMAGE_NAME"
-if [ ! -f "$JAMMY_OS_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $JAMMY_OS_IMAGE_URL || exit 1
-    mv "$JAMMY_OS_IMAGE_NAME.zip" $JAMMY_OS_IMAGE_NAME
-    popd
-fi
+acquire_workload "$JAMMY_OS_IMAGE_NAME" "$JAMMY_OS_IMAGE_URL" || exit 1
 
 JAMMY_OS_RAW_IMAGE_NAME="jammy-server-cloudimg-amd64-custom-20220329-0.raw"
 JAMMY_OS_RAW_IMAGE="$WORKLOADS_DIR/$JAMMY_OS_RAW_IMAGE_NAME"
@@ -109,17 +100,28 @@ fi
 
 ALPINE_MINIROOTFS_URL="http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/x86_64/alpine-minirootfs-3.11.3-x86_64.tar.gz"
 ALPINE_MINIROOTFS_TARBALL="$WORKLOADS_DIR/alpine-minirootfs-x86_64.tar.gz"
-if [ ! -f "$ALPINE_MINIROOTFS_TARBALL" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet $ALPINE_MINIROOTFS_URL -O $ALPINE_MINIROOTFS_TARBALL || exit 1
-    popd
-fi
+acquire_workload "alpine-minirootfs-x86_64.tar.gz" "$ALPINE_MINIROOTFS_URL" || exit 1
+load_custom_x86_artifacts || exit 1
+case ",$CUSTOM_X86_ARTIFACTS," in
+*,alpine-minirootfs-x86_64.tar.gz,*) ;;
+*)
+    (
+        cd "$WORKLOADS_DIR" || exit 1
+        grep ' alpine-minirootfs-x86_64.tar.gz$' "$OLDPWD/scripts/sha1sums-x86_64" | sha1sum --check
+    ) || {
+        echo "sha1sum validation of Alpine minirootfs failed, remove the invalid image to fix the issue."
+        exit 1
+    }
+    ;;
+esac
 
 ALPINE_INITRAMFS_IMAGE="$WORKLOADS_DIR/alpine_initramfs.img"
 if [ ! -f "$ALPINE_INITRAMFS_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    mkdir alpine-minirootfs
-    tar xf "$ALPINE_MINIROOTFS_TARBALL" -C alpine-minirootfs
+    pushd "$WORKLOADS_DIR" || exit 1
+    rm -rf alpine-minirootfs
+    mkdir alpine-minirootfs || exit 1
+    tar --no-same-owner --no-same-permissions -xf "$ALPINE_MINIROOTFS_TARBALL" -C alpine-minirootfs || exit 1
+    rm -f alpine-minirootfs/init || exit 1
     cat > alpine-minirootfs/init <<-EOF
 		#! /bin/sh
 		mount -t devtmpfs dev /dev
@@ -133,26 +135,53 @@ if [ ! -f "$ALPINE_INITRAMFS_IMAGE" ]; then
     popd
 fi
 
-pushd $WORKLOADS_DIR
-sha1sum sha1sums-x86_64 --check
-if [ $? -ne 0 ]; then
+CUSTOM_SHA1_EXCLUDES="$CUSTOM_X86_ARTIFACTS"
+case ",$CUSTOM_SHA1_EXCLUDES," in
+*,bionic-server-cloudimg-amd64.qcow2,*)
+    CUSTOM_SHA1_EXCLUDES="$CUSTOM_SHA1_EXCLUDES,bionic-server-cloudimg-amd64.raw"
+    ;;
+esac
+case ",$CUSTOM_SHA1_EXCLUDES," in
+*,focal-server-cloudimg-amd64-custom-20210609-0.qcow2,*)
+    CUSTOM_SHA1_EXCLUDES="$CUSTOM_SHA1_EXCLUDES,focal-server-cloudimg-amd64-custom-20210609-0.raw"
+    ;;
+esac
+case ",$CUSTOM_SHA1_EXCLUDES," in
+*,jammy-server-cloudimg-amd64-custom-20220329-0.qcow2,*)
+    CUSTOM_SHA1_EXCLUDES="$CUSTOM_SHA1_EXCLUDES,jammy-server-cloudimg-amd64-custom-20220329-0.raw"
+    ;;
+esac
+
+SHA1SUMS_FILTERED=$(mktemp)
+while read -r checksum filename; do
+    case ",$CUSTOM_SHA1_EXCLUDES," in
+    *,"$filename",*) ;;
+    *) printf '%s  %s\n' "$checksum" "$filename" >> "$SHA1SUMS_FILTERED" ;;
+    esac
+done < scripts/sha1sums-x86_64
+RES=0
+if [ -s "$SHA1SUMS_FILTERED" ]; then
+    (
+        cd "$WORKLOADS_DIR" || exit 1
+        sha1sum --check "$SHA1SUMS_FILTERED"
+    )
+    RES=$?
+fi
+rm -f "$SHA1SUMS_FILTERED"
+if [ $RES -ne 0 ]; then
     echo "sha1sum validation of images failed, remove invalid images to fix the issue."
     exit 1
 fi
-popd
 
 # Build custom kernel based on virtio-pmem and virtio-fs upstream patches
 VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
-if [ ! -f "$VMLINUX_IMAGE" ]; then
-    pushd $WORKLOADS_DIR
-    time wget --quiet https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux || exit 1
-#    build_custom_linux
-    popd
-fi
+acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1
 
 VIRTIOFSD="$WORKLOADS_DIR/virtiofsd"
-VIRTIOFSD_DIR="virtiofsd_build"
-if [ ! -f "$VIRTIOFSD" ]; then
+if [ -n "${WORKLOADS_BASE_URL:-}" ] || [ "${CH_OFFLINE:-false}" = "true" ]; then
+    acquire_workload "virtiofsd" "" || exit 1
+elif [ ! -f "$VIRTIOFSD" ]; then
+    VIRTIOFSD_DIR="virtiofsd_build"
     pushd $WORKLOADS_DIR
     git clone "https://gitlab.com/virtio-fs/virtiofsd.git" $VIRTIOFSD_DIR
     pushd $VIRTIOFSD_DIR
@@ -163,6 +192,7 @@ if [ ! -f "$VIRTIOFSD" ]; then
     rm -rf $VIRTIOFSD_DIR
     popd
 fi
+chmod +x "$FW" "$VIRTIOFSD"
 
 
 BLK_IMAGE="$WORKLOADS_DIR/blk.img"
@@ -205,6 +235,12 @@ strip target/$BUILD_TARGET/release/ch-remote
 cp target/$BUILD_TARGET/release/cube-hypervisor $VFIO_DIR
 cp target/$BUILD_TARGET/release/ch-remote $VFIO_DIR
 
+if [ "$prepare_offline" = "true" ]; then
+    cargo test $features --no-run --target $BUILD_TARGET
+    cargo test $features --features lib_support --no-run --target $BUILD_TARGET
+    exit 0
+fi
+
 # Enable KSM with some reasonable parameters so that it won't take too long
 # for the memory to be merged between two processes.
 sudo bash -c "echo 1000000 > /sys/kernel/mm/ksm/pages_to_scan"
@@ -222,7 +258,8 @@ export RUST_BACKTRACE=1
 
 # Quick mode: run only core smoke tests across 5 priority levels
 if [ "$quick_mode" = "true" ]; then
-    echo "=== Quick mode: running core smoke tests ==="
+    parallel_threads="${test_threads:-1}"
+    echo "=== Quick mode: running core smoke tests with $parallel_threads parallel threads ==="
 
     # Priority 1: Boot & Lifecycle
     PRIORITY1_TESTS="test_focal_hypervisor_fw|test_direct_kernel_boot|test_multi_cpu|test_power_button|test_api_create_boot|test_api_shutdown|test_api_pause_resume"
@@ -243,7 +280,7 @@ if [ "$quick_mode" = "true" ]; then
     echo ""
     echo ">>> [Step 1/5] Priority 1: Boot & Lifecycle"
     build_test_filters "common_parallel" "$PRIORITY1_TESTS"
-    time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+    time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
     RES=$?
 
     # Step 2: Priority 2 - Core I/O Devices (parallel)
@@ -251,7 +288,7 @@ if [ "$quick_mode" = "true" ]; then
         echo ""
         echo ">>> [Step 2/5] Priority 2: Core I/O Devices"
         build_test_filters "common_parallel" "$PRIORITY2_TESTS"
-        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+        time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -260,7 +297,7 @@ if [ "$quick_mode" = "true" ]; then
         echo ""
         echo ">>> [Step 3/5] Priority 3: Hotplug"
         build_test_filters "common_parallel" "$PRIORITY3_TESTS"
-        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+        time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -297,10 +334,11 @@ if [ "$quick_mode" = "true" ]; then
 fi
 
 # Full mode: run all tests
-echo "=== Full mode: running all tests ==="
+parallel_threads="${test_threads:-$(($(nproc)/2))}"
+echo "=== Full mode: running all tests with $parallel_threads parallel threads ==="
 
 build_test_filters "common_parallel" "$test_filter"
-time cargo test $features -- --test-threads=$(($(nproc)/2)) ${test_binary_args[*]} ${test_filters[*]}
+time cargo test $features -- --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
 RES=$?
 
 if [ $RES -eq 0 ]; then
