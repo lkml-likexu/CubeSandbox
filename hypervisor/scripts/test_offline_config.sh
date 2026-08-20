@@ -275,6 +275,12 @@ if "$SCRIPT_DIR/dev_cli.sh" build-container --apt-mirror 'file:///mirror' >"$TMP
 fi
 grep -q 'must be an http(s) URL' "$TMP_DIR/url.out"
 
+grep -q 'rustup target add \$ARCH-unknown-linux-musl' "$SCRIPT_DIR/../resources/Dockerfile"
+if grep -q 'rustup toolchain add.*unknown-linux-musl' "$SCRIPT_DIR/../resources/Dockerfile"; then
+    echo "Dockerfile installs a musl target as a host toolchain" >&2
+    exit 1
+fi
+
 : > "$DOCKER_LOG"
 mkdir -p \
     "$TMP_DIR/home/workloads/alpine-minirootfs" \
