@@ -159,12 +159,23 @@ CH_WORKLOADS_DIR=/srv/cloud-hypervisor-workloads
 
 `CUBESANDBOX_DIR` 默认为当前 `dev_cli.sh` 所在的 CubeSandbox 根目录；`CH_WORKLOADS_DIR` 默认为 `$HOME/workloads`。这些变量适用于 Bundle 准备和测试执行，容器内仍分别挂载到 `/cloud-hypervisor` 与 `/root/workloads`。
 
+## 配置开发容器 OCI 镜像
+
+默认使用 `ghcr.io/cloud-hypervisor/cloud-hypervisor:20240507-0`。可通过环境变量指定内部 Registry 或其他兼容镜像：
+
+```bash
+export CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:20240507-0
+```
+
+该变量适用于容器构建、测试和 Bundle 准备。显式传入 `--local` 时使用仓库默认的 `ghcr.io/cloud-hypervisor/cloud-hypervisor:local`，优先于该变量。Bundle 只在 `MANIFEST` 中记录镜像引用，不包含镜像 tar；运行离线测试前，必须通过内部 Registry 或独立介质使同一镜像在测试机本地可用。
+
 ## 在联网机器准备离线 Bundle
 
 在仓库根目录执行：
 
 ```bash
-./hypervisor/scripts/dev_cli.sh --prepare-offline-bundle
+CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:20240507-0 \
+  ./hypervisor/scripts/dev_cli.sh --prepare-offline-bundle
 ```
 
 该命令会：
@@ -174,7 +185,7 @@ CH_WORKLOADS_DIR=/srv/cloud-hypervisor-workloads
 3. 转换磁盘镜像并生成测试辅助文件；
 4. 编译 release 二进制及测试二进制，但不执行测试；
 5. 收集当前 CubeSandbox 工作树、workloads、Cargo 缓存和编译产物；
-6. 导出容器镜像并在当前目录生成与本机架构匹配的归档：
+6. 记录 OCI 镜像引用，并在当前目录生成与本机架构匹配的归档：
 
 ```text
 cloud-hypervisor-offline-<short-commit>-x86_64.tgz
@@ -195,7 +206,6 @@ Bundle 包含：
 ```text
 MANIFEST
 SHA256SUMS
-docker/cloud-hypervisor-dev-image.tar
 workloads/
 CubeSandbox/                      # 当前已跟踪及未忽略的未跟踪源码
 CubeSandbox/hypervisor/build/cargo_registry/
@@ -247,24 +257,25 @@ test "$(grep '^architecture=' MANIFEST | cut -d= -f2-)" = "$(uname -m)"
 
 `CubeSandbox/` 已包含生成 Bundle 时的当前工作树，包括已跟踪文件的未提交修改及未忽略的未跟踪源码。
 
-### 3. 导入开发镜像
+### 3. 准备开发镜像
 
-```bash
-docker load -i docker/cloud-hypervisor-dev-image.tar
-```
-
-可使用 manifest 中记录的镜像名确认导入结果：
+从可访问的内部 OCI Registry 拉取 `MANIFEST` 记录的镜像，或通过独立介质导入同名镜像：
 
 ```bash
 IMAGE=$(grep '^container_image=' MANIFEST | cut -d= -f2-)
+docker pull "$IMAGE"
 docker image inspect "$IMAGE" >/dev/null
+export CH_DEV_IMAGE="$IMAGE"
 ```
+
+完全隔离环境不能执行 `docker pull`，需要在联网机器另行 `docker save`，传输后执行 `docker load`。镜像归档不属于 Bundle。
 
 ## 完全离线运行测试
 
-在 Bundle 解压目录中设置源码和 workloads 的绝对路径：
+在 Bundle 解压目录中设置镜像、源码和 workloads：
 
 ```bash
+export CH_DEV_IMAGE="$(grep '^container_image=' MANIFEST | cut -d= -f2-)"
 export CUBESANDBOX_DIR="$PWD/CubeSandbox"
 export CH_WORKLOADS_DIR="$PWD/workloads"
 ```
@@ -313,10 +324,11 @@ export CH_WORKLOADS_DIR="$PWD/workloads"
 
 ### Development image is not available locally
 
-开发镜像尚未导入，重新执行：
+`CH_DEV_IMAGE` 指定的镜像在本地不存在。通过可访问的 Registry 拉取，或从独立传输的镜像归档导入：
 
 ```bash
-docker load -i docker/cloud-hypervisor-dev-image.tar
+docker pull "$CH_DEV_IMAGE"
+# 或：docker load -i /path/to/cloud-hypervisor-dev-image.tar
 ```
 
 ### Offline workloads missing

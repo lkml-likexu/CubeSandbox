@@ -88,6 +88,23 @@ grep -q -- '--env CH_OFFLINE=true' "$DOCKER_LOG"
 grep -q -- '--env CARGO_NET_OFFLINE=true' "$DOCKER_LOG"
 
 : > "$DOCKER_LOG"
+CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:test \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --quick --offline
+grep -q '^image inspect registry.internal/cloud-hypervisor/dev:test$' "$DOCKER_LOG"
+grep -q '^run .* registry.internal/cloud-hypervisor/dev:test ./scripts/run_integration_tests_x86_64.sh ' "$DOCKER_LOG"
+if grep -q '^pull ' "$DOCKER_LOG"; then
+    echo "custom image offline mode attempted to pull" >&2
+    exit 1
+fi
+
+: > "$DOCKER_LOG"
+CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:test \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" --local tests --integration --quick --offline
+grep -q '^image inspect ghcr.io/cloud-hypervisor/cloud-hypervisor:local$' "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
 CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --test-threads 3' "$DOCKER_LOG"
@@ -304,7 +321,8 @@ EOF
 chmod +x "$TMP_DIR/bin/cp"
 (
     cd "$TMP_DIR"
-    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:bundle \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
 BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-x86_64.tgz' -print -quit)
@@ -312,11 +330,17 @@ test -n "$BUNDLE"
 grep -q '^pigz$' "$PIGZ_LOG"
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
 grep -q 'run_integration_tests_live_migration.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
-grep -q '^save -o .*/docker/cloud-hypervisor-dev-image.tar ghcr.io/cloud-hypervisor/cloud-hypervisor:20240507-0$' "$DOCKER_LOG"
+if grep -q '^save ' "$DOCKER_LOG"; then
+    echo "bundle preparation unexpectedly exported the development image" >&2
+    exit 1
+fi
 tar -tzf "$BUNDLE" > "$TMP_DIR/bundle.list"
 grep -q '^./MANIFEST$' "$TMP_DIR/bundle.list"
 grep -q '^./SHA256SUMS$' "$TMP_DIR/bundle.list"
-grep -q '^./docker/cloud-hypervisor-dev-image.tar$' "$TMP_DIR/bundle.list"
+if grep -q '^./docker/cloud-hypervisor-dev-image.tar$' "$TMP_DIR/bundle.list"; then
+    echo "bundle unexpectedly contains the development image tar" >&2
+    exit 1
+fi
 grep -q '^./workloads/vmlinux$' "$TMP_DIR/bundle.list"
 grep -q '^./workloads/bionic-server-cloudimg-amd64.qcow2$' "$TMP_DIR/bundle.list"
 grep -q '^./workloads/alpine-minirootfs-x86_64.tar.gz$' "$TMP_DIR/bundle.list"
@@ -345,6 +369,7 @@ if grep -q '\.dev_cli\.log\.txt$' "$TMP_DIR/bundle.list"; then
 fi
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_commit='
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_dirty=true$'
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^container_image=registry.internal/cloud-hypervisor/dev:bundle$'
 mkdir "$TMP_DIR/extracted"
 tar -xzf "$BUNDLE" -C "$TMP_DIR/extracted"
 (cd "$TMP_DIR/extracted" && sha256sum --check SHA256SUMS >/dev/null)
