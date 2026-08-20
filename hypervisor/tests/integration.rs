@@ -2753,7 +2753,7 @@ mod common_parallel {
         assert!(
             String::from_utf8_lossy(&host_cpus_count.stdout)
                 .trim()
-                .parse::<u8>()
+                .parse::<usize>()
                 .unwrap_or(0)
                 >= 4
         );
@@ -3777,28 +3777,6 @@ mod common_parallel {
         let output = child.wait_with_output().unwrap();
 
         handle_child_output(r, &output);
-    }
-
-    #[test]
-    fn test_virtio_fs() {
-        _test_virtio_fs(&prepare_virtiofsd, false, None)
-    }
-
-    #[test]
-    fn test_virtio_fs_hotplug() {
-        _test_virtio_fs(&prepare_virtiofsd, true, None)
-    }
-
-    #[test]
-    #[cfg(not(feature = "mshv"))]
-    fn test_virtio_fs_multi_segment_hotplug() {
-        _test_virtio_fs(&prepare_virtiofsd, true, Some(15))
-    }
-
-    #[test]
-    #[cfg(not(feature = "mshv"))]
-    fn test_virtio_fs_multi_segment() {
-        _test_virtio_fs(&prepare_virtiofsd, false, Some(15))
     }
 
     #[test]
@@ -6800,10 +6778,24 @@ mod common_parallel {
         let kernel_path = edk2_path();
 
         let phy_net = "eth0";
+        let probe_name = "macvtap-probe";
+        let probe = exec_host_command_output(&format!(
+            "sudo ip link add link {} name {} type macvtap mode bridge",
+            phy_net, probe_name
+        ));
+        if !probe.status.success() {
+            let stderr = String::from_utf8_lossy(&probe.stderr);
+            if stderr.contains("Unknown device type") {
+                eprintln!("Skipping macvtap test: the host kernel does not support macvtap");
+                return;
+            }
+            panic!("macvtap capability probe failed: {stderr}");
+        }
+        assert!(exec_host_command_status(&format!("sudo ip link del {}", probe_name)).success());
 
         // Create a macvtap interface for the guest VM to use
         assert!(exec_host_command_status(&format!(
-            "sudo ip link add link {} name {} type macvtap mod bridge",
+            "sudo ip link add link {} name {} type macvtap mode bridge",
             phy_net, guest_macvtap_name
         ))
         .success());
@@ -6849,7 +6841,7 @@ mod common_parallel {
         // Create a macvtap on the same physical net interface for
         // the host machine to use
         assert!(exec_host_command_status(&format!(
-            "sudo ip link add link {} name {} type macvtap mod bridge",
+            "sudo ip link add link {} name {} type macvtap mode bridge",
             phy_net, host_macvtap_name
         ))
         .success());
@@ -7406,6 +7398,28 @@ mod common_sequential {
     use vmm::vm_config::{DiskConfig, FsConfig, NetConfig, PmemConfig, VsockConfig};
 
     use crate::*;
+
+    #[test]
+    fn test_virtio_fs() {
+        _test_virtio_fs(&prepare_virtiofsd, false, None)
+    }
+
+    #[test]
+    fn test_virtio_fs_hotplug() {
+        _test_virtio_fs(&prepare_virtiofsd, true, None)
+    }
+
+    #[test]
+    #[cfg(not(feature = "mshv"))]
+    fn test_virtio_fs_multi_segment_hotplug() {
+        _test_virtio_fs(&prepare_virtiofsd, true, Some(15))
+    }
+
+    #[test]
+    #[cfg(not(feature = "mshv"))]
+    fn test_virtio_fs_multi_segment() {
+        _test_virtio_fs(&prepare_virtiofsd, false, Some(15))
+    }
 
     #[test]
     fn test_memory_mergeable_on() {
