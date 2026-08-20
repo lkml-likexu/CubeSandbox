@@ -6,11 +6,10 @@
 
 CLI_NAME="Cloud Hypervisor"
 
-#CTR_IMAGE_TAG="cloudhypervisor/dev"
-#CTR_IMAGE_VERSION="20220705-0"
 CTR_IMAGE_TAG="ghcr.io/cloud-hypervisor/cloud-hypervisor"
 CTR_IMAGE_VERSION="20240507-0"
-CTR_IMAGE="${CTR_IMAGE_TAG}:${CTR_IMAGE_VERSION}"
+DEFAULT_CTR_IMAGE="${CTR_IMAGE_TAG}:${CTR_IMAGE_VERSION}"
+CTR_IMAGE="${CH_DEV_IMAGE:-$DEFAULT_CTR_IMAGE}"
 
 DOCKER_RUNTIME="docker"
 
@@ -132,15 +131,12 @@ ensure_latest_ctr() {
     if [ "$CH_OFFLINE" = "true" ]; then
         $DOCKER_RUNTIME image inspect "$CTR_IMAGE" >/dev/null 2>&1 ||
             die "Development image $CTR_IMAGE is not available locally. Load or build it before using --offline."
-    elif [ "$CTR_IMAGE_VERSION" = "local" ]; then
+    elif [ "$CTR_IMAGE" = "${CTR_IMAGE_TAG}:local" ]; then
         build_container
-    else
-        $DOCKER_RUNTIME pull "$CTR_IMAGE"
-
-        if [ $? -ne 0 ]; then
-            build_container
-        fi
-
+    elif ! $DOCKER_RUNTIME pull "$CTR_IMAGE"; then
+        [ "$CTR_IMAGE" = "$DEFAULT_CTR_IMAGE" ] ||
+            die "Error pulling custom development image $CTR_IMAGE."
+        build_container
         ok_or_die "Error pulling/building container image. Aborting."
     fi
 }
@@ -257,7 +253,8 @@ cmd_help() {
     echo "Available commands:"
     echo ""
     echo "    --prepare-offline-bundle"
-    echo "        Download and compile offline test dependencies into a transferable tar.gz."
+    echo "        Download and compile offline test dependencies into a transferable tgz."
+    echo "        CH_DEV_IMAGE overrides the development OCI image."
     echo ""
     echo "    build [--debug|--release] [--libc musl|gnu] [-- [<cargo args>]]"
     echo "        Build the Cloud Hypervisor binaries."
@@ -885,11 +882,8 @@ prepare_offline_bundle() {
     trap cleanup_offline_bundle EXIT
 
     mkdir -p \
-        "$OFFLINE_BUNDLE_STAGE/docker" \
         "$OFFLINE_BUNDLE_STAGE/workloads" \
         "$OFFLINE_BUNDLE_STAGE/CubeSandbox/hypervisor/build"
-    $DOCKER_RUNTIME save -o "$OFFLINE_BUNDLE_STAGE/docker/cloud-hypervisor-dev-image.tar" "$CTR_IMAGE" ||
-        die "Failed to export development image $CTR_IMAGE."
     cp -a "$CH_WORKLOADS_DIR/." "$OFFLINE_BUNDLE_STAGE/workloads/" ||
         die "Failed to stage workloads."
     prune_staged_workloads
@@ -960,10 +954,9 @@ EOF
     OFFLINE_BUNDLE_TEMP=""
 
     say "Offline bundle created: $output"
-    echo "On the offline machine, extract it and run:"
-    echo "  docker load -i docker/cloud-hypervisor-dev-image.tar"
-    echo "  CUBESANDBOX_DIR=\"\$PWD/CubeSandbox\" CH_WORKLOADS_DIR=\"\$PWD/workloads\" ./CubeSandbox/hypervisor/scripts/dev_cli.sh tests --integration --offline"
-    echo "  CUBESANDBOX_DIR=\"\$PWD/CubeSandbox\" CH_WORKLOADS_DIR=\"\$PWD/workloads\" ./CubeSandbox/hypervisor/scripts/dev_cli.sh tests --integration-live-migration --offline"
+    echo "On the offline machine, make $CTR_IMAGE available locally, extract the bundle, and run:"
+    echo "  CH_DEV_IMAGE=\"$CTR_IMAGE\" CUBESANDBOX_DIR=\"\$PWD/CubeSandbox\" CH_WORKLOADS_DIR=\"\$PWD/workloads\" ./CubeSandbox/hypervisor/scripts/dev_cli.sh tests --integration --offline"
+    echo "  CH_DEV_IMAGE=\"$CTR_IMAGE\" CUBESANDBOX_DIR=\"\$PWD/CubeSandbox\" CH_WORKLOADS_DIR=\"\$PWD/workloads\" ./CubeSandbox/hypervisor/scripts/dev_cli.sh tests --integration-live-migration --offline"
 }
 
 cmd_shell() {
@@ -1025,8 +1018,7 @@ while [ $# -gt 0 ]; do
         exit 1
     } ;;
     --local) {
-        CTR_IMAGE_VERSION="local"
-        CTR_IMAGE="${CTR_IMAGE_TAG}:${CTR_IMAGE_VERSION}"
+        CTR_IMAGE="${CTR_IMAGE_TAG}:local"
     } ;;
     -*)
         die "Unknown arg: $1. Please use \`$0 help\` for help."
