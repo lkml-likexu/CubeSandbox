@@ -782,13 +782,35 @@ prepare_custom_x86_artifacts() {
 
 prepare_custom_aarch64_artifacts() {
     prepare_custom_artifacts CH_CUSTOM_AARCH64_ARTIFACTS .custom_aarch64_artifacts \
-        "CH_BIONIC_ARM64_IMG_FILE:bionic-server-cloudimg-arm64.img:bionic-server-cloudimg-arm64.raw,bionic-server-cloudimg-arm64.qcow2" \
-        "CH_FOCAL_ARM64_RAW_FILE:focal-server-cloudimg-arm64-custom-20210929-0.raw:focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw" \
-        "CH_FOCAL_ARM64_QCOW2_FILE:focal-server-cloudimg-arm64-custom-20210929-0.qcow2:" \
-        "CH_JAMMY_ARM64_RAW_FILE:jammy-server-cloudimg-arm64-custom-20220329-0.raw:" \
-        "CH_JAMMY_ARM64_QCOW2_FILE:jammy-server-cloudimg-arm64-custom-20220329-0.qcow2:" \
+        "CH_BIONIC_ARM64_QCOW2_FILE:bionic-server-cloudimg-arm64.qcow2:bionic-server-cloudimg-arm64.raw" \
+        "CH_FOCAL_ARM64_QCOW2_FILE:focal-server-cloudimg-arm64-custom-20210929-0.qcow2:focal-server-cloudimg-arm64-custom-20210929-0.raw,focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw" \
+        "CH_JAMMY_ARM64_QCOW2_FILE:jammy-server-cloudimg-arm64-custom-20220329-0.qcow2:jammy-server-cloudimg-arm64-custom-20220329-0.raw" \
         "CH_ALPINE_ARM64_MINIROOTFS_FILE:alpine-minirootfs-aarch64.tar.gz:alpine_initramfs.img" \
         "CH_CLOUD_HYPERVISOR_STATIC_ARM64_FILE:cloud-hypervisor-static-aarch64:"
+}
+
+prune_staged_workloads() {
+    local workloads="$OFFLINE_BUNDLE_STAGE/workloads"
+    find "$workloads" -name .git -prune -exec rm -rf {} + ||
+        die "Failed to remove Git metadata from staged workloads."
+    rm -rf \
+        "$workloads/alpine_initramfs.img" \
+        "$workloads/alpine-minirootfs" ||
+        die "Failed to remove derived workloads from the offline bundle."
+    find "$workloads" -type f \
+        \( -name '*-server-cloudimg-*.img' \
+        -o -name '*-server-cloudimg-*.raw' \) \
+        -delete || die "Failed to remove duplicate guest image formats."
+
+    if find "$workloads" -name .git -print -quit | grep -q . ||
+        find "$workloads" -type f \
+            \( -name '*-server-cloudimg-*.img' \
+            -o -name '*-server-cloudimg-*.raw' \
+            -o -name 'alpine_initramfs.img' \) \
+            -print -quit | grep -q . ||
+        [ -d "$workloads/alpine-minirootfs" ]; then
+        die "Offline bundle workloads contain noncanonical derived files."
+    fi
 }
 
 cleanup_offline_bundle() {
@@ -870,6 +892,7 @@ prepare_offline_bundle() {
         die "Failed to export development image $CTR_IMAGE."
     cp -a "$CH_WORKLOADS_DIR/." "$OFFLINE_BUNDLE_STAGE/workloads/" ||
         die "Failed to stage workloads."
+    prune_staged_workloads
 
     local git_source_list="$OFFLINE_BUNDLE_STAGE/git-source-files"
     local source_list="$OFFLINE_BUNDLE_STAGE/source-files"
@@ -879,7 +902,7 @@ prepare_offline_bundle() {
     while IFS= read -r -d '' source_file; do
         [ -e "$CUBESANDBOX_DIR/$source_file" ] || [ -L "$CUBESANDBOX_DIR/$source_file" ] || continue
         case "$source_file" in
-        cloud-hypervisor-offline-*.tgz | cloud-hypervisor-offline-*.tgz.tmp.* | */cloud-hypervisor-offline-*.tgz | */cloud-hypervisor-offline-*.tgz.tmp.* | cloud-hypervisor-offline-*.tar.gz | cloud-hypervisor-offline-*.tar.gz.tmp.* | */cloud-hypervisor-offline-*.tar.gz | */cloud-hypervisor-offline-*.tar.gz.tmp.* | *.dev_cli.log.txt | */*.dev_cli.log.txt) continue ;;
+        .git | .git/* | */.git | */.git/* | CubeSandbox | CubeSandbox/* | MANIFEST | SHA256SUMS | workloads | workloads/* | docker/cloud-hypervisor-dev-image.tar | cloud-hypervisor-offline-*.tgz | cloud-hypervisor-offline-*.tgz.tmp.* | */cloud-hypervisor-offline-*.tgz | */cloud-hypervisor-offline-*.tgz.tmp.* | cloud-hypervisor-offline-*.tar.gz | cloud-hypervisor-offline-*.tar.gz.tmp.* | */cloud-hypervisor-offline-*.tar.gz | */cloud-hypervisor-offline-*.tar.gz.tmp.* | *.dev_cli.log.txt | */*.dev_cli.log.txt) continue ;;
         esac
         printf '%s\0' "$source_file"
     done < "$git_source_list" > "$source_list" ||

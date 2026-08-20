@@ -88,7 +88,7 @@ load_custom_aarch64_artifacts() {
     for artifact in "${artifacts[@]}"; do
         [ -z "$artifact" ] && continue
         case "$artifact" in
-        bionic-server-cloudimg-arm64.img | focal-server-cloudimg-arm64-custom-20210929-0.raw | focal-server-cloudimg-arm64-custom-20210929-0.qcow2 | jammy-server-cloudimg-arm64-custom-20220329-0.raw | jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 | alpine-minirootfs-aarch64.tar.gz | cloud-hypervisor-static-aarch64) ;;
+        bionic-server-cloudimg-arm64.qcow2 | focal-server-cloudimg-arm64-custom-20210929-0.qcow2 | jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 | alpine-minirootfs-aarch64.tar.gz | cloud-hypervisor-static-aarch64) ;;
         *)
             echo "Unknown custom aarch64 artifact: $artifact" >&2
             return 1

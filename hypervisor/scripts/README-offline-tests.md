@@ -81,10 +81,8 @@ vmlinux
 aarch64 内网制品源应提供可直接下载的输入文件：
 
 ```text
-bionic-server-cloudimg-arm64.img
-focal-server-cloudimg-arm64-custom-20210929-0.raw
+bionic-server-cloudimg-arm64.qcow2
 focal-server-cloudimg-arm64-custom-20210929-0.qcow2
-jammy-server-cloudimg-arm64-custom-20220329-0.raw
 jammy-server-cloudimg-arm64-custom-20220329-0.qcow2
 alpine-minirootfs-aarch64.tar.gz
 cloud-hypervisor-static-aarch64
@@ -133,10 +131,8 @@ CH_X86_VMLINUX_FILE=/srv/artifacts/vmlinux \
 
 | 环境变量 | Bundle 中的文件名 |
 |---|---|
-| `CH_BIONIC_ARM64_IMG_FILE` | `bionic-server-cloudimg-arm64.img` |
-| `CH_FOCAL_ARM64_RAW_FILE` | `focal-server-cloudimg-arm64-custom-20210929-0.raw` |
+| `CH_BIONIC_ARM64_QCOW2_FILE` | `bionic-server-cloudimg-arm64.qcow2` |
 | `CH_FOCAL_ARM64_QCOW2_FILE` | `focal-server-cloudimg-arm64-custom-20210929-0.qcow2` |
-| `CH_JAMMY_ARM64_RAW_FILE` | `jammy-server-cloudimg-arm64-custom-20220329-0.raw` |
 | `CH_JAMMY_ARM64_QCOW2_FILE` | `jammy-server-cloudimg-arm64-custom-20220329-0.qcow2` |
 | `CH_ALPINE_ARM64_MINIROOTFS_FILE` | `alpine-minirootfs-aarch64.tar.gz` |
 | `CH_CLOUD_HYPERVISOR_STATIC_ARM64_FILE` | `cloud-hypervisor-static-aarch64` |
@@ -144,13 +140,13 @@ CH_X86_VMLINUX_FILE=/srv/artifacts/vmlinux \
 例如：
 
 ```bash
-CH_BIONIC_ARM64_IMG_FILE=/srv/artifacts/bionic-server-cloudimg-arm64.img \
-CH_FOCAL_ARM64_RAW_FILE=/srv/artifacts/focal-server-cloudimg-arm64-custom-20210929-0.raw \
+CH_BIONIC_ARM64_QCOW2_FILE=/srv/artifacts/bionic-server-cloudimg-arm64.qcow2 \
+CH_FOCAL_ARM64_QCOW2_FILE=/srv/artifacts/focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
 CH_CLOUD_HYPERVISOR_STATIC_ARM64_FILE=/srv/artifacts/cloud-hypervisor-static-aarch64 \
   ./hypervisor/scripts/dev_cli.sh --prepare-offline-bundle
 ```
 
-替换 Bionic img 会重新生成其 raw 和 qcow2；替换 Focal raw 会重新生成 update-kernel raw；替换 Alpine minirootfs 会重新生成 initramfs。与 x86_64 相同，只有显式覆盖项及对应派生项跳过仓库旧 SHA-1，Bundle 内实际字节仍由 `SHA256SUMS` 覆盖。
+替换 qcow2 会重新生成对应 raw，替换 Focal qcow2 还会重新生成 update-kernel raw；替换 Alpine minirootfs 会重新生成 initramfs。与 x86_64 相同，只有显式覆盖项跳过仓库旧 SHA-1，Bundle 内实际字节仍由 `SHA256SUMS` 覆盖。
 
 ## 自定义源码和 workloads 目录
 
@@ -208,7 +204,9 @@ CubeSandbox/hypervisor/build/cargo_target/
 CubeSandbox/hypervisor/target/    # 存在时包含
 ```
 
-`MANIFEST` 记录源码提交、工作树是否有未提交修改、架构、创建时间、容器镜像、自定义 x86/aarch64 制品名及归档目录。源码通过 Git 的已跟踪文件和未忽略的未跟踪文件清单复制；`.git`、ignored 构建产物、`*.dev_cli.log.txt` 及旧 Bundle 不会进入归档，所需 Cargo 缓存会单独加入。
+Bundle 只保留可传输的规范输入：Alpine 仅保留 `alpine-minirootfs-*.tar.gz`，Bionic、Focal 和 Jammy 仅保留 qcow2。`alpine_initramfs.img`、解压目录、raw/img 镜像、ARM update-kernel raw 及 `vfio/` 副本不会进入 Bundle；离线测试启动时会从 tar.gz/qcow2 在本地重新生成这些运行时文件。raw 文件仍用于测试隔离副本、VFIO 嵌套虚机和 ARM 内核注入，但无需重复传输。
+
+`MANIFEST` 记录源码提交、工作树是否有未提交修改、架构、创建时间、容器镜像、自定义 x86/aarch64 制品名及归档目录。源码通过 Git 的已跟踪文件和未忽略的未跟踪文件清单复制；任何层级的 `.git` 元数据、ignored 构建产物、`*.dev_cli.log.txt` 及旧 Bundle 不会进入归档，所需 Cargo 缓存会单独加入。
 
 记录归档自身的校验值，以便传输后验证：
 

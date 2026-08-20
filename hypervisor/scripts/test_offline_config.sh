@@ -132,6 +132,108 @@ if grep -q 'cargo build --all' "$TMP_DIR/arm-offline.out"; then
     exit 1
 fi
 
+ARM_DERIVE_HOME="$TMP_DIR/arm-derive-home"
+ARM_DERIVE_WORKLOADS="$ARM_DERIVE_HOME/workloads"
+ARM_DERIVE_BIN="$TMP_DIR/arm-derive-bin"
+mkdir -p \
+    "$ARM_DERIVE_HOME/.cargo" \
+    "$ARM_DERIVE_WORKLOADS/shared_dir" \
+    "$ARM_DERIVE_WORKLOADS/spdk-nvme/rpc" \
+    "$ARM_DERIVE_BIN"
+: > "$ARM_DERIVE_HOME/.cargo/env"
+for artifact in \
+    bionic-server-cloudimg-arm64.qcow2 \
+    focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
+    jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
+    alpine-minirootfs-aarch64.tar.gz \
+    cloud-hypervisor-static-aarch64 \
+    Image \
+    Image.gz \
+    CLOUDHV_EFI.fd \
+    virtiofsd \
+    blk.img; do
+    printf '%s' "$artifact" > "$ARM_DERIVE_WORKLOADS/$artifact"
+done
+printf file1 > "$ARM_DERIVE_WORKLOADS/shared_dir/file1"
+printf file3 > "$ARM_DERIVE_WORKLOADS/shared_dir/file3"
+printf nvmf > "$ARM_DERIVE_WORKLOADS/spdk-nvme/nvmf_tgt"
+printf rpc > "$ARM_DERIVE_WORKLOADS/spdk-nvme/rpc.py"
+printf '%s\n' \
+    bionic-server-cloudimg-arm64.qcow2 \
+    focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
+    jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
+    alpine-minirootfs-aarch64.tar.gz \
+    cloud-hypervisor-static-aarch64 \
+    > "$ARM_DERIVE_WORKLOADS/.custom_aarch64_artifacts"
+cat > "$ARM_DERIVE_BIN/qemu-img" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$ARM_DERIVE_LOG"
+/bin/cp "${@: -2:1}" "${@: -1}"
+EOF
+cat > "$ARM_DERIVE_BIN/tar" <<'EOF'
+#!/bin/bash
+mkdir -p "${@: -1}/bin"
+printf busybox > "${@: -1}/bin/busybox"
+EOF
+cat > "$ARM_DERIVE_BIN/cpio" <<'EOF'
+#!/bin/bash
+printf initramfs
+EOF
+cat > "$ARM_DERIVE_BIN/guestmount" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$ARM_DERIVE_LOG"
+mkdir -p "${@: -1}/boot"
+EOF
+cat > "$ARM_DERIVE_BIN/guestunmount" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat > "$ARM_DERIVE_BIN/sha1sum" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat > "$ARM_DERIVE_BIN/cargo" <<'EOF'
+#!/bin/bash
+printf 'cargo %s\n' "$*" >> "$ARM_DERIVE_LOG"
+EOF
+cat > "$ARM_DERIVE_BIN/strip" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat > "$ARM_DERIVE_BIN/wget" <<'EOF'
+#!/bin/bash
+printf 'unexpected wget: %s\n' "$*" >> "$ARM_DERIVE_LOG"
+exit 1
+EOF
+chmod +x "$ARM_DERIVE_BIN"/*
+export ARM_DERIVE_LOG="$TMP_DIR/arm-derive.log"
+(
+    cd "$SCRIPT_DIR/.."
+    PATH="$ARM_DERIVE_BIN:$PATH" \
+        HOME="$ARM_DERIVE_HOME" \
+        CH_OFFLINE=true \
+        CH_LIBC=gnu \
+        WORKLOADS_DIR="$ARM_DERIVE_WORKLOADS" \
+        SPDK_INSTALL_DIR="$TMP_DIR/arm-spdk-install" \
+        ./scripts/run_integration_tests_aarch64.sh --prepare-offline
+) > "$TMP_DIR/arm-derive.out" 2>&1
+for artifact in \
+    bionic-server-cloudimg-arm64.raw \
+    focal-server-cloudimg-arm64-custom-20210929-0.raw \
+    jammy-server-cloudimg-arm64-custom-20220329-0.raw \
+    focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw \
+    alpine_initramfs.img; do
+    test -f "$ARM_DERIVE_WORKLOADS/$artifact"
+done
+test "$(cat "$ARM_DERIVE_WORKLOADS/focal-server-cloudimg-root/boot/vmlinuz")" = "$(cat "$ARM_DERIVE_WORKLOADS/Image.gz")"
+test "$(grep -c 'qcow2 -O raw' "$ARM_DERIVE_LOG")" -eq 3
+grep -q '^cargo build --all --release' "$ARM_DERIVE_LOG"
+grep -q '^cargo test .*--no-run' "$ARM_DERIVE_LOG"
+if grep -q 'unexpected wget' "$ARM_DERIVE_LOG"; then
+    echo "aarch64 offline derivation attempted a download" >&2
+    exit 1
+fi
+
 : > "$DOCKER_LOG"
 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration \
@@ -157,8 +259,28 @@ fi
 grep -q 'must be an http(s) URL' "$TMP_DIR/url.out"
 
 : > "$DOCKER_LOG"
-mkdir -p "$TMP_DIR/home/workloads"
+mkdir -p \
+    "$TMP_DIR/home/workloads/alpine-minirootfs" \
+    "$TMP_DIR/home/workloads/vfio" \
+    "$TMP_DIR/home/workloads/cache/.git"
 printf workload > "$TMP_DIR/home/workloads/vmlinux"
+for artifact in \
+    bionic-server-cloudimg-amd64.qcow2 \
+    focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
+    jammy-server-cloudimg-amd64-custom-20220329-0.qcow2 \
+    alpine-minirootfs-x86_64.tar.gz; do
+    printf canonical > "$TMP_DIR/home/workloads/$artifact"
+done
+for artifact in \
+    bionic-server-cloudimg-amd64.raw \
+    focal-server-cloudimg-amd64-custom-20210609-0.raw \
+    jammy-server-cloudimg-amd64-custom-20220329-0.raw \
+    alpine_initramfs.img; do
+    printf derived > "$TMP_DIR/home/workloads/$artifact"
+done
+printf derived > "$TMP_DIR/home/workloads/alpine-minirootfs/init"
+printf derived > "$TMP_DIR/home/workloads/vfio/focal-server-cloudimg-amd64-custom-20210609-0.raw"
+printf metadata > "$TMP_DIR/home/workloads/cache/.git/config"
 cat > "$TMP_DIR/bin/pigz" <<'EOF'
 #!/bin/bash
 printf 'pigz\n' >> "$PIGZ_LOG"
@@ -196,12 +318,25 @@ grep -q '^./MANIFEST$' "$TMP_DIR/bundle.list"
 grep -q '^./SHA256SUMS$' "$TMP_DIR/bundle.list"
 grep -q '^./docker/cloud-hypervisor-dev-image.tar$' "$TMP_DIR/bundle.list"
 grep -q '^./workloads/vmlinux$' "$TMP_DIR/bundle.list"
+grep -q '^./workloads/bionic-server-cloudimg-amd64.qcow2$' "$TMP_DIR/bundle.list"
+grep -q '^./workloads/alpine-minirootfs-x86_64.tar.gz$' "$TMP_DIR/bundle.list"
+if grep -Eq '^\./workloads/(.*/)?\.git(/|$)|^\./workloads/(alpine_initramfs\.img|alpine-minirootfs/)|^\./workloads/(.*/)?[^/]*-server-cloudimg-.*\.(img|raw)$' "$TMP_DIR/bundle.list"; then
+    echo "bundle unexpectedly contains derived workloads" >&2
+    exit 1
+fi
+test -f "$TMP_DIR/home/workloads/bionic-server-cloudimg-amd64.raw"
+test -f "$TMP_DIR/home/workloads/alpine_initramfs.img"
+test -f "$TMP_DIR/home/workloads/vfio/focal-server-cloudimg-amd64-custom-20210609-0.raw"
 grep -q '^./CubeSandbox/hypervisor/scripts/dev_cli.sh$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_registry/placeholder$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_git_registry/placeholder$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_target/placeholder$' "$TMP_DIR/bundle.list"
-if grep -q '^./CubeSandbox/.git/' "$TMP_DIR/bundle.list"; then
+if grep -Eq '^\./CubeSandbox/(.*/)?\.git(/|$)' "$TMP_DIR/bundle.list"; then
     echo "bundle unexpectedly contains Git metadata" >&2
+    exit 1
+fi
+if grep -q '^./CubeSandbox/CubeSandbox/' "$TMP_DIR/bundle.list"; then
+    echo "bundle unexpectedly contains a nested extracted source tree" >&2
     exit 1
 fi
 if grep -q '\.dev_cli\.log\.txt$' "$TMP_DIR/bundle.list"; then
@@ -287,20 +422,17 @@ tar -xOf "$ARM_BUNDLE" ./MANIFEST | grep -q '^architecture=aarch64$'
 
 ARM_CUSTOM_OUTPUT="$TMP_DIR/arm-custom-output"
 mkdir -p "$ARM_CUSTOM_OUTPUT"
-for artifact in bionic-arm64.img focal-arm64.raw focal-arm64.qcow2 jammy-arm64.raw jammy-arm64.qcow2 alpine-arm64.tar.gz cloud-hypervisor-static-aarch64; do
+for artifact in bionic-arm64.qcow2 focal-arm64.qcow2 jammy-arm64.qcow2 alpine-arm64.tar.gz cloud-hypervisor-static-aarch64; do
     printf 'custom-%s' "$artifact" > "$CUSTOM_ARTIFACTS/$artifact"
 done
 printf stale > "$TMP_DIR/home/workloads/bionic-server-cloudimg-arm64.raw"
-printf stale > "$TMP_DIR/home/workloads/bionic-server-cloudimg-arm64.qcow2"
 printf stale > "$TMP_DIR/home/workloads/focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw"
 printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
 (
     cd "$ARM_CUSTOM_OUTPUT"
     MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
-        CH_BIONIC_ARM64_IMG_FILE="$CUSTOM_ARTIFACTS/bionic-arm64.img" \
-        CH_FOCAL_ARM64_RAW_FILE="$CUSTOM_ARTIFACTS/focal-arm64.raw" \
+        CH_BIONIC_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/bionic-arm64.qcow2" \
         CH_FOCAL_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/focal-arm64.qcow2" \
-        CH_JAMMY_ARM64_RAW_FILE="$CUSTOM_ARTIFACTS/jammy-arm64.raw" \
         CH_JAMMY_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/jammy-arm64.qcow2" \
         CH_ALPINE_ARM64_MINIROOTFS_FILE="$CUSTOM_ARTIFACTS/alpine-arm64.tar.gz" \
         CH_CLOUD_HYPERVISOR_STATIC_ARM64_FILE="$CUSTOM_ARTIFACTS/cloud-hypervisor-static-aarch64" \
@@ -308,20 +440,24 @@ printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
 )
 ARM_CUSTOM_BUNDLE=$(find "$ARM_CUSTOM_OUTPUT" -name 'cloud-hypervisor-offline-*-aarch64.tgz' -print -quit)
 test -n "$ARM_CUSTOM_BUNDLE"
-test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/bionic-server-cloudimg-arm64.img)" = 'custom-bionic-arm64.img'
+test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/bionic-server-cloudimg-arm64.qcow2)" = 'custom-bionic-arm64.qcow2'
+test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/focal-server-cloudimg-arm64-custom-20210929-0.qcow2)" = 'custom-focal-arm64.qcow2'
+test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/jammy-server-cloudimg-arm64-custom-20220329-0.qcow2)" = 'custom-jammy-arm64.qcow2'
+test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/alpine-minirootfs-aarch64.tar.gz)" = 'custom-alpine-arm64.tar.gz'
 test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/cloud-hypervisor-static-aarch64)" = 'custom-cloud-hypervisor-static-aarch64'
-tar -xOf "$ARM_CUSTOM_BUNDLE" ./MANIFEST | grep -q '^custom_aarch64_artifacts=bionic-server-cloudimg-arm64.img,focal-server-cloudimg-arm64-custom-20210929-0.raw,focal-server-cloudimg-arm64-custom-20210929-0.qcow2,jammy-server-cloudimg-arm64-custom-20220329-0.raw,jammy-server-cloudimg-arm64-custom-20220329-0.qcow2,alpine-minirootfs-aarch64.tar.gz,cloud-hypervisor-static-aarch64$'
-test ! -f "$TMP_DIR/home/workloads/bionic-server-cloudimg-arm64.raw"
-test ! -f "$TMP_DIR/home/workloads/bionic-server-cloudimg-arm64.qcow2"
-test ! -f "$TMP_DIR/home/workloads/focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw"
-test ! -f "$TMP_DIR/home/workloads/alpine_initramfs.img"
+tar -xOf "$ARM_CUSTOM_BUNDLE" ./MANIFEST | grep -q '^custom_aarch64_artifacts=bionic-server-cloudimg-arm64.qcow2,focal-server-cloudimg-arm64-custom-20210929-0.qcow2,jammy-server-cloudimg-arm64-custom-20220329-0.qcow2,alpine-minirootfs-aarch64.tar.gz,cloud-hypervisor-static-aarch64$'
+tar -tzf "$ARM_CUSTOM_BUNDLE" > "$TMP_DIR/arm-custom-bundle.list"
+if grep -Eq '^\./workloads/(.*/)?[^/]*-server-cloudimg-.*\.(img|raw)$|^\./workloads/(alpine_initramfs\.img|alpine-minirootfs/)' "$TMP_DIR/arm-custom-bundle.list"; then
+    echo "ARM bundle unexpectedly contains derived workloads" >&2
+    exit 1
+fi
 
-if MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" CH_BIONIC_ARM64_IMG_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+if MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" CH_BIONIC_ARM64_QCOW2_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/arm-artifact-path.out" 2>&1; then
     echo "relative ARM custom artifact unexpectedly succeeded" >&2
     exit 1
 fi
-grep -q 'CH_BIONIC_ARM64_IMG_FILE must be an absolute path' "$TMP_DIR/arm-artifact-path.out"
+grep -q 'CH_BIONIC_ARM64_QCOW2_FILE must be an absolute path' "$TMP_DIR/arm-artifact-path.out"
 
 if "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle unexpected >"$TMP_DIR/bundle-args.out" 2>&1; then
     echo "bundle command unexpectedly accepted arguments" >&2
