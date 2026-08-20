@@ -1,288 +1,347 @@
 #!/bin/bash
 set -x
 
-source $HOME/.cargo/env
-source $(dirname "$0")/test-util.sh
-source $(dirname "$0")/common-aarch64.sh
+source "$HOME/.cargo/env"
+source "$(dirname "$0")/test-util.sh"
+source "$(dirname "$0")/common-aarch64.sh"
 
 WORKLOADS_LOCK="$WORKLOADS_DIR/integration_test.lock"
+SPDK_DEPLOY_DIR="$WORKLOADS_DIR/spdk-nvme"
+SPDK_INSTALL_DIR="${SPDK_INSTALL_DIR:-/usr/local/bin/spdk-nvme}"
+
+install_spdk_nvme() {
+    mkdir -p "$SPDK_INSTALL_DIR"
+    cp "$SPDK_DEPLOY_DIR/nvmf_tgt" "$SPDK_INSTALL_DIR/nvmf_tgt"
+    cp "$SPDK_DEPLOY_DIR/rpc.py" "$SPDK_INSTALL_DIR/rpc.py"
+    rm -rf "$SPDK_INSTALL_DIR/rpc"
+    cp -r "$SPDK_DEPLOY_DIR/rpc" "$SPDK_INSTALL_DIR/rpc"
+}
 
 build_spdk_nvme() {
-    SPDK_DIR="$WORKLOADS_DIR/spdk"
-    SPDK_REPO="https://github.com/spdk/spdk.git"
-    SPDK_DEPLOY_DIR="/usr/local/bin/spdk-nvme"
-    checkout_repo "$SPDK_DIR" "$SPDK_REPO" master "6301f8915de32baed10dba1eebed556a6749211a"
+    if [ -f "$SPDK_DEPLOY_DIR/nvmf_tgt" ] &&
+        [ -f "$SPDK_DEPLOY_DIR/rpc.py" ] &&
+        [ -d "$SPDK_DEPLOY_DIR/rpc" ]; then
+        return
+    fi
 
-    if [ ! -f "$SPDK_DIR/.built" ]; then
-        pushd $SPDK_DIR
+    local spdk_dir="$WORKLOADS_DIR/spdk"
+    checkout_repo \
+        "$spdk_dir" \
+        "https://github.com/spdk/spdk.git" \
+        master \
+        "6301f8915de32baed10dba1eebed556a6749211a"
+
+    if [ ! -f "$spdk_dir/.built" ] ||
+        [ ! -f "$spdk_dir/build/bin/nvmf_tgt" ] ||
+        [ ! -f "$spdk_dir/scripts/rpc.py" ] ||
+        [ ! -d "$spdk_dir/scripts/rpc" ]; then
+        pushd "$spdk_dir" || return 1
         git submodule update --init
         apt-get update
         ./scripts/pkgdep.sh
         ./configure --with-vfio-user
         chmod +x /usr/local/lib/python3.8/dist-packages/ninja/data/bin/ninja
-        make -j `nproc` || exit 1
+        make -j "$(nproc)" || exit 1
         touch .built
-        popd
+        popd || return 1
     fi
-    if [ ! -d "/usr/local/bin/spdk-nvme" ]; then
-        mkdir -p $SPDK_DEPLOY_DIR
-    fi
-    cp "$WORKLOADS_DIR/spdk/build/bin/nvmf_tgt" $SPDK_DEPLOY_DIR/nvmf_tgt
-    cp "$WORKLOADS_DIR/spdk/scripts/rpc.py" $SPDK_DEPLOY_DIR/rpc.py
-    cp -r "$WORKLOADS_DIR/spdk/scripts/rpc" $SPDK_DEPLOY_DIR/rpc
+
+    mkdir -p "$SPDK_DEPLOY_DIR"
+    rm -rf "$SPDK_DEPLOY_DIR/rpc"
+    cp "$spdk_dir/build/bin/nvmf_tgt" "$SPDK_DEPLOY_DIR/nvmf_tgt"
+    cp "$spdk_dir/scripts/rpc.py" "$SPDK_DEPLOY_DIR/rpc.py"
+    cp -r "$spdk_dir/scripts/rpc" "$SPDK_DEPLOY_DIR/rpc"
 }
 
 build_virtiofsd() {
-    VIRTIOFSD_DIR="$WORKLOADS_DIR/virtiofsd_build"
-    VIRTIOFSD_REPO="https://gitlab.com/virtio-fs/virtiofsd.git"
+    [ -f "$WORKLOADS_DIR/virtiofsd" ] && return
 
-    checkout_repo "$VIRTIOFSD_DIR" "$VIRTIOFSD_REPO" v1.1.0 "220405d7a2606c92636d31992b5cb3036a41047b"
+    local virtiofsd_dir="$WORKLOADS_DIR/virtiofsd_build"
+    checkout_repo \
+        "$virtiofsd_dir" \
+        "https://gitlab.com/virtio-fs/virtiofsd.git" \
+        v1.1.0 \
+        "220405d7a2606c92636d31992b5cb3036a41047b"
 
-    if [ ! -f "$VIRTIOFSD_DIR/.built" ]; then
-        pushd $VIRTIOFSD_DIR
-        time cargo build --release
-        cp target/release/virtiofsd "$WORKLOADS_DIR/" || exit 1
-        touch .built
-        popd
+    pushd "$virtiofsd_dir" || return 1
+    time cargo build --release
+    cp target/release/virtiofsd "$WORKLOADS_DIR/" || return 1
+    popd || return 1
+}
+
+validate_aarch64_images() {
+    local custom_excludes="$CUSTOM_AARCH64_ARTIFACTS"
+    case ",$custom_excludes," in
+    *,bionic-server-cloudimg-arm64.img,*)
+        custom_excludes="$custom_excludes,bionic-server-cloudimg-arm64.raw,bionic-server-cloudimg-arm64.qcow2"
+        ;;
+    esac
+
+    local checksums_filtered
+    checksums_filtered=$(mktemp) || return 1
+    while read -r checksum filename; do
+        [ -z "$filename" ] && continue
+        case ",$custom_excludes," in
+        *,"$filename",*) ;;
+        *) printf '%s  %s\n' "$checksum" "$filename" >> "$checksums_filtered" ;;
+        esac
+    done < "$WORKLOADS_DIR/sha1sums-aarch64"
+
+    local result=0
+    if [ -s "$checksums_filtered" ]; then
+        (
+            cd "$WORKLOADS_DIR" || exit 1
+            sha1sum --check "$checksums_filtered"
+        ) || result=$?
+    fi
+    rm -f "$checksums_filtered"
+    if [ $result -ne 0 ]; then
+        echo "sha1sum validation of images failed, remove invalid images to fix the issue."
+        return 1
     fi
 }
 
+require_aarch64_offline_workloads() {
+    require_offline_workloads \
+        bionic-server-cloudimg-arm64.img \
+        bionic-server-cloudimg-arm64.raw \
+        bionic-server-cloudimg-arm64.qcow2 \
+        focal-server-cloudimg-arm64-custom-20210929-0.raw \
+        focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
+        focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw \
+        jammy-server-cloudimg-arm64-custom-20220329-0.raw \
+        jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
+        alpine-minirootfs-aarch64.tar.gz \
+        alpine_initramfs.img \
+        cloud-hypervisor-static-aarch64 \
+        Image \
+        Image.gz \
+        CLOUDHV_EFI.fd \
+        virtiofsd \
+        blk.img \
+        shared_dir/file1 \
+        shared_dir/file3 \
+        spdk-nvme/nvmf_tgt \
+        spdk-nvme/rpc.py || return 1
+
+    [ -d "$SPDK_DEPLOY_DIR/rpc" ] || {
+        echo "Offline workload is missing: $SPDK_DEPLOY_DIR/rpc" >&2
+        return 1
+    }
+}
+
 update_workloads() {
-    cp scripts/sha1sums-aarch64 $WORKLOADS_DIR
+    cp scripts/sha1sums-aarch64 "$WORKLOADS_DIR"
+    load_custom_aarch64_artifacts || return 1
 
-    BIONIC_OS_IMAGE_DOWNLOAD_NAME="bionic-server-cloudimg-arm64.img"
-    BIONIC_OS_IMAGE_DOWNLOAD_URL="https://cloud-hypervisor.azureedge.net/$BIONIC_OS_IMAGE_DOWNLOAD_NAME"
-    BIONIC_OS_DOWNLOAD_IMAGE="$WORKLOADS_DIR/$BIONIC_OS_IMAGE_DOWNLOAD_NAME"
-    if [ ! -f "$BIONIC_OS_DOWNLOAD_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $BIONIC_OS_IMAGE_DOWNLOAD_URL || exit 1
-        popd
+    if [ "${CH_OFFLINE:-false}" = "true" ]; then
+        require_aarch64_offline_workloads || return 1
+        validate_aarch64_images || return 1
+        chmod +x \
+            "$WORKLOADS_DIR/cloud-hypervisor-static-aarch64" \
+            "$WORKLOADS_DIR/virtiofsd" \
+            "$SPDK_DEPLOY_DIR/nvmf_tgt" \
+            "$SPDK_DEPLOY_DIR/rpc.py"
+        install_spdk_nvme
+        return
     fi
 
-    BIONIC_OS_RAW_IMAGE_NAME="bionic-server-cloudimg-arm64.raw"
-    BIONIC_OS_RAW_IMAGE="$WORKLOADS_DIR/$BIONIC_OS_RAW_IMAGE_NAME"
-    if [ ! -f "$BIONIC_OS_RAW_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time qemu-img convert -p -f qcow2 -O raw $BIONIC_OS_IMAGE_DOWNLOAD_NAME $BIONIC_OS_RAW_IMAGE_NAME || exit 1
-        popd
+    local bionic_download_name="bionic-server-cloudimg-arm64.img"
+    acquire_workload \
+        "$bionic_download_name" \
+        "https://cloud-hypervisor.azureedge.net/$bionic_download_name" || return 1
+
+    local bionic_raw_name="bionic-server-cloudimg-arm64.raw"
+    if [ ! -f "$WORKLOADS_DIR/$bionic_raw_name" ]; then
+        time qemu-img convert -p -f qcow2 -O raw \
+            "$WORKLOADS_DIR/$bionic_download_name" \
+            "$WORKLOADS_DIR/$bionic_raw_name" || return 1
     fi
 
-    # Convert the raw image to qcow2 image to remove compressed blocks from the disk. Therefore letting the
-    # qcow2 format image can be directly used in the integration test.
-    BIONIC_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME="bionic-server-cloudimg-arm64.qcow2"
-    BIONIC_OS_QCOW2_UNCOMPRESSED_IMAGE="$WORKLOADS_DIR/$BIONIC_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME"
-    if [ ! -f "$BIONIC_OS_QCOW2_UNCOMPRESSED_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time qemu-img convert -p -f raw -O qcow2 $BIONIC_OS_RAW_IMAGE_NAME $BIONIC_OS_QCOW2_UNCOMPRESSED_IMAGE || exit 1
-        popd
+    local bionic_qcow2_name="bionic-server-cloudimg-arm64.qcow2"
+    if [ ! -f "$WORKLOADS_DIR/$bionic_qcow2_name" ]; then
+        time qemu-img convert -p -f raw -O qcow2 \
+            "$WORKLOADS_DIR/$bionic_raw_name" \
+            "$WORKLOADS_DIR/$bionic_qcow2_name" || return 1
     fi
 
-    FOCAL_OS_RAW_IMAGE_NAME="focal-server-cloudimg-arm64-custom-20210929-0.raw"
-    FOCAL_OS_RAW_IMAGE_DOWNLOAD_URL="https://cloud-hypervisor.azureedge.net/$FOCAL_OS_RAW_IMAGE_NAME"
-    FOCAL_OS_RAW_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_NAME"
-    if [ ! -f "$FOCAL_OS_RAW_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $FOCAL_OS_RAW_IMAGE_DOWNLOAD_URL || exit 1
-        popd
-    fi
+    local focal_raw_name="focal-server-cloudimg-arm64-custom-20210929-0.raw"
+    acquire_workload \
+        "$focal_raw_name" \
+        "https://cloud-hypervisor.azureedge.net/$focal_raw_name" || return 1
 
-    FOCAL_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME="focal-server-cloudimg-arm64-custom-20210929-0.qcow2"
-    FOCAL_OS_QCOW2_IMAGE_UNCOMPRESSED_DOWNLOAD_URL="https://cloud-hypervisor.azureedge.net/$FOCAL_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME"
-    FOCAL_OS_QCOW2_UNCOMPRESSED_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME"
-    if [ ! -f "$FOCAL_OS_QCOW2_UNCOMPRESSED_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $FOCAL_OS_QCOW2_IMAGE_UNCOMPRESSED_DOWNLOAD_URL || exit 1
-        popd
-    fi
+    local focal_qcow2_name="focal-server-cloudimg-arm64-custom-20210929-0.qcow2"
+    acquire_workload \
+        "$focal_qcow2_name" \
+        "https://cloud-hypervisor.azureedge.net/$focal_qcow2_name" || return 1
 
-    JAMMY_OS_RAW_IMAGE_NAME="jammy-server-cloudimg-arm64-custom-20220329-0.raw"
-    JAMMY_OS_RAW_IMAGE_DOWNLOAD_URL="https://cloud-hypervisor.azureedge.net/$JAMMY_OS_RAW_IMAGE_NAME"
-    JAMMY_OS_RAW_IMAGE="$WORKLOADS_DIR/$JAMMY_OS_RAW_IMAGE_NAME"
-    if [ ! -f "$JAMMY_OS_RAW_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $JAMMY_OS_RAW_IMAGE_DOWNLOAD_URL || exit 1
-        popd
-    fi
+    local jammy_raw_name="jammy-server-cloudimg-arm64-custom-20220329-0.raw"
+    acquire_workload \
+        "$jammy_raw_name" \
+        "https://cloud-hypervisor.azureedge.net/$jammy_raw_name" || return 1
 
-    JAMMY_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME="jammy-server-cloudimg-arm64-custom-20220329-0.qcow2"
-    JAMMY_OS_QCOW2_IMAGE_UNCOMPRESSED_DOWNLOAD_URL="https://cloud-hypervisor.azureedge.net/$JAMMY_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME"
-    JAMMY_OS_QCOW2_UNCOMPRESSED_IMAGE="$WORKLOADS_DIR/$JAMMY_OS_QCOW2_IMAGE_UNCOMPRESSED_NAME"
-    if [ ! -f "$JAMMY_OS_QCOW2_UNCOMPRESSED_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $JAMMY_OS_QCOW2_IMAGE_UNCOMPRESSED_DOWNLOAD_URL || exit 1
-        popd
-    fi
+    local jammy_qcow2_name="jammy-server-cloudimg-arm64-custom-20220329-0.qcow2"
+    acquire_workload \
+        "$jammy_qcow2_name" \
+        "https://cloud-hypervisor.azureedge.net/$jammy_qcow2_name" || return 1
 
-    ALPINE_MINIROOTFS_URL="http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/aarch64/alpine-minirootfs-3.11.3-aarch64.tar.gz"
-    ALPINE_MINIROOTFS_TARBALL="$WORKLOADS_DIR/alpine-minirootfs-aarch64.tar.gz"
-    if [ ! -f "$ALPINE_MINIROOTFS_TARBALL" ]; then
-        pushd $WORKLOADS_DIR
-        time wget --quiet $ALPINE_MINIROOTFS_URL -O $ALPINE_MINIROOTFS_TARBALL || exit 1
-        popd
-    fi
+    local alpine_name="alpine-minirootfs-aarch64.tar.gz"
+    acquire_workload \
+        "$alpine_name" \
+        "http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/aarch64/alpine-minirootfs-3.11.3-aarch64.tar.gz" || return 1
 
-    ALPINE_INITRAMFS_IMAGE="$WORKLOADS_DIR/alpine_initramfs.img"
-    if [ ! -f "$ALPINE_INITRAMFS_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        mkdir alpine-minirootfs
-        tar xf "$ALPINE_MINIROOTFS_TARBALL" -C alpine-minirootfs
-        cat > alpine-minirootfs/init <<-EOF
+    case ",$CUSTOM_AARCH64_ARTIFACTS," in
+    *,alpine-minirootfs-aarch64.tar.gz,*) ;;
+    *)
+        (
+            cd "$WORKLOADS_DIR" || exit 1
+            grep ' alpine-minirootfs-aarch64.tar.gz$' sha1sums-aarch64 | sha1sum --check
+        ) || return 1
+        ;;
+    esac
+
+    local alpine_initramfs="$WORKLOADS_DIR/alpine_initramfs.img"
+    if [ ! -f "$alpine_initramfs" ]; then
+        local alpine_root="$WORKLOADS_DIR/alpine-minirootfs"
+        rm -rf "$alpine_root"
+        mkdir "$alpine_root"
+        tar --no-same-owner --no-same-permissions -xf "$WORKLOADS_DIR/$alpine_name" -C "$alpine_root" || return 1
+        rm -f "$alpine_root/init" || return 1
+        cat > "$alpine_root/init" <<-EOF
 			#! /bin/sh
 			mount -t devtmpfs dev /dev
 			echo \$TEST_STRING > /dev/console
 			poweroff -f
 		EOF
-        chmod +x alpine-minirootfs/init
-        cd alpine-minirootfs
-        find . -print0 |
-            cpio --null --create --verbose --owner root:root --format=newc > "$ALPINE_INITRAMFS_IMAGE"
-        popd
+        chmod +x "$alpine_root/init"
+        (
+            cd "$alpine_root" || exit 1
+            find . -print0 |
+                cpio --null --create --verbose --owner root:root --format=newc > "$alpine_initramfs"
+        ) || return 1
     fi
 
-    pushd $WORKLOADS_DIR
-    sha1sum sha1sums-aarch64 --check
-    if [ $? -ne 0 ]; then
-        echo "sha1sum validation of images failed, remove invalid images to fix the issue."
-        exit 1
-    fi
-    popd
+    validate_aarch64_images || return 1
 
-    # Download Cloud Hypervisor binary from its last stable release
-    LAST_RELEASE_VERSION="v26.0"
-    CH_RELEASE_URL="https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$LAST_RELEASE_VERSION/cloud-hypervisor-static-aarch64"
-    CH_RELEASE_NAME="cloud-hypervisor-static-aarch64"
-    pushd $WORKLOADS_DIR
-    time wget --quiet $CH_RELEASE_URL -O "$CH_RELEASE_NAME" || exit 1
-    chmod +x $CH_RELEASE_NAME
-    popd
+    local release_name="cloud-hypervisor-static-aarch64"
+    acquire_workload \
+        "$release_name" \
+        "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v26.0/$release_name" || return 1
+    chmod +x "$WORKLOADS_DIR/$release_name"
 
-    # Build custom kernel for guest VMs
-    build_custom_linux
-
-    # Update the kernel in the cloud image for some tests that requires recent kernel version
-    FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_NAME="focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw"
-    cp "$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_NAME" "$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_NAME"
-    FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_ROOT_DIR="$WORKLOADS_DIR/focal-server-cloudimg-root"
-    mkdir -p "$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_ROOT_DIR"
-    # Mount the 'raw' image, replace the compressed kernel file and umount the working folder
-    guestmount -a "$WORKLOADS_DIR/$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_NAME" -m /dev/sda1 "$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_ROOT_DIR" || exit 1
-    cp "$WORKLOADS_DIR"/Image.gz "$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_ROOT_DIR"/boot/vmlinuz
-    guestunmount "$FOCAL_OS_RAW_IMAGE_UPDATE_KERNEL_ROOT_DIR"
-
-    # Build virtiofsd
-    build_virtiofsd
-
-    BLK_IMAGE="$WORKLOADS_DIR/blk.img"
-    MNT_DIR="mount_image"
-    if [ ! -f "$BLK_IMAGE" ]; then
-        pushd $WORKLOADS_DIR
-        fallocate -l 16M $BLK_IMAGE
-        mkfs.ext4 -j $BLK_IMAGE
-        mkdir $MNT_DIR
-        sudo mount -t ext4 $BLK_IMAGE $MNT_DIR
-        sudo bash -c "echo bar > $MNT_DIR/foo" || exit 1
-        sudo umount $BLK_IMAGE
-        rm -r $MNT_DIR
-        popd
+    if [ ! -f "$WORKLOADS_DIR/Image" ] || [ ! -f "$WORKLOADS_DIR/Image.gz" ]; then
+        build_custom_linux || return 1
     fi
 
-    SHARED_DIR="$WORKLOADS_DIR/shared_dir"
-    if [ ! -d "$SHARED_DIR" ]; then
-        mkdir -p $SHARED_DIR
-        echo "foo" > "$SHARED_DIR/file1"
-        echo "bar" > "$SHARED_DIR/file3" || exit 1
+    if [ ! -f "$WORKLOADS_DIR/CLOUDHV_EFI.fd" ]; then
+        build_edk2 || return 1
     fi
 
-    # Checkout and build SPDK NVMe
-    build_spdk_nvme
+    local updated_focal="$WORKLOADS_DIR/focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw"
+    if [ ! -f "$updated_focal" ]; then
+        cp "$WORKLOADS_DIR/$focal_raw_name" "$updated_focal"
+        local focal_root="$WORKLOADS_DIR/focal-server-cloudimg-root"
+        mkdir -p "$focal_root"
+        guestmount -a "$updated_focal" -m /dev/sda1 "$focal_root" || return 1
+        cp "$WORKLOADS_DIR/Image.gz" "$focal_root/boot/vmlinuz"
+        guestunmount "$focal_root" || return 1
+    fi
 
-    # Checkout and build EDK2
-    build_edk2
+    build_virtiofsd || return 1
+    chmod +x "$WORKLOADS_DIR/virtiofsd"
+
+    local blk_image="$WORKLOADS_DIR/blk.img"
+    if [ ! -f "$blk_image" ]; then
+        local mount_dir="$WORKLOADS_DIR/mount_image"
+        fallocate -l 16M "$blk_image"
+        mkfs.ext4 -j "$blk_image"
+        mkdir "$mount_dir"
+        sudo mount -t ext4 "$blk_image" "$mount_dir"
+        sudo bash -c "echo bar > $mount_dir/foo" || return 1
+        sudo umount "$blk_image"
+        rm -r "$mount_dir"
+    fi
+
+    local shared_dir="$WORKLOADS_DIR/shared_dir"
+    mkdir -p "$shared_dir"
+    [ -f "$shared_dir/file1" ] || echo "foo" > "$shared_dir/file1"
+    [ -f "$shared_dir/file3" ] || echo "bar" > "$shared_dir/file3" || return 1
+
+    build_spdk_nvme || return 1
+    chmod +x "$SPDK_DEPLOY_DIR/nvmf_tgt" "$SPDK_DEPLOY_DIR/rpc.py"
+    install_spdk_nvme
 }
 
 process_common_args "$@"
 
-# aarch64 not supported for MSHV
-if [[ "$hypervisor" = "mshv" ]]; then
+if [ "$hypervisor" = "mshv" ]; then
     echo "AArch64 is not supported in Microsoft Hypervisor"
     exit 1
 fi
 
-# For now these values are deafult for kvm
 features=""
 
-# lock the workloads folder to avoid parallel updating by different containers
 (
     echo "try to lock $WORKLOADS_DIR folder and update"
     flock -x 12 && update_workloads
-) 12>$WORKLOADS_LOCK
-
-# Check if there is any error in the execution of `update_workloads`.
-# If there is any error, then kill the shell. Otherwise the script will continue
-# running even if the `update_workloads` function was failed.
+) 12>"$WORKLOADS_LOCK"
 RES=$?
-if [ $RES -ne 0 ]; then
-    exit 1
-fi
+[ $RES -eq 0 ] || exit $RES
 
 BUILD_TARGET="aarch64-unknown-linux-${CH_LIBC}"
-if [[ "${BUILD_TARGET}" == "aarch64-unknown-linux-musl" ]]; then
-export TARGET_CC="musl-gcc"
-export RUSTFLAGS="-C link-arg=-lgcc -C link_arg=-specs -C link_arg=/usr/lib/aarch64-linux-musl/musl-gcc.specs"
+if [ "$BUILD_TARGET" = "aarch64-unknown-linux-musl" ]; then
+    export TARGET_CC="musl-gcc"
+    export RUSTFLAGS="-C link-arg=-lgcc -C link_arg=-specs -C link_arg=/usr/lib/aarch64-linux-musl/musl-gcc.specs"
 fi
 
 export RUST_BACKTRACE=1
 
-# Test without ACPI
-cargo build --all --release $features --target $BUILD_TARGET
-strip target/$BUILD_TARGET/release/cloud-hypervisor
-strip target/$BUILD_TARGET/release/vhost_user_net
-strip target/$BUILD_TARGET/release/ch-remote
+cargo build --all --release $features --target "$BUILD_TARGET"
+strip "target/$BUILD_TARGET/release/cube-hypervisor"
+strip "target/$BUILD_TARGET/release/vhost_user_net"
+strip "target/$BUILD_TARGET/release/ch-remote"
 
-# Enable KSM with some reasonable parameters so that it won't take too long
-# for the memory to be merged between two processes.
+if [ "$prepare_offline" = "true" ]; then
+    cargo test $features --no-run --target "$BUILD_TARGET"
+    exit 0
+fi
+
 sudo bash -c "echo 1000000 > /sys/kernel/mm/ksm/pages_to_scan"
 sudo bash -c "echo 10 > /sys/kernel/mm/ksm/sleep_millisecs"
 sudo bash -c "echo 1 > /sys/kernel/mm/ksm/run"
 
-# Both test_vfio and ovs-dpdk rely on hugepages
 echo 6144 | sudo tee /proc/sys/vm/nr_hugepages
 sudo chmod a+rwX /dev/hugepages
 
-# Run all direct kernel boot (Device Tree) test cases in mod `parallel`
-time cargo test $features "common_parallel::$test_filter" --target $BUILD_TARGET -- ${test_binary_args[*]}
+parallel_test_args=()
+if [ -n "$test_threads" ]; then
+    parallel_test_args=(--test-threads="$test_threads")
+    echo "Running parallel test suites with $test_threads threads"
+fi
+
+if [ "$live_migration_only" != "true" ]; then
+    time cargo test $features "common_parallel::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
+    RES=$?
+
+    if [ $RES -eq 0 ]; then
+        time cargo test $features "common_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
+        RES=$?
+    fi
+
+    if [ $RES -eq 0 ]; then
+        time cargo test $features "aarch64_acpi::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
+        RES=$?
+    fi
+
+    [ $RES -eq 0 ] || exit $RES
+fi
+
+time cargo test $features "live_migration_parallel::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
 RES=$?
 
-# Run some tests in sequence since the result could be affected by other tests
-# running in parallel.
 if [ $RES -eq 0 ]; then
-    time cargo test $features "common_sequential::$test_filter" --target $BUILD_TARGET -- --test-threads=1 ${test_binary_args[*]}
+    time cargo test $features "live_migration_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
     RES=$?
-else
-    exit $RES
-fi
-
-# Run all ACPI test cases
-if [ $RES -eq 0 ]; then
-    time cargo test $features "aarch64_acpi::$test_filter" --target $BUILD_TARGET -- ${test_binary_args[*]}
-    RES=$?
-else
-    exit $RES
-fi
-
-# Run all test cases related to live migration
-if [ $RES -eq 0 ]; then
-    time cargo test $features "live_migration_parallel::$test_filter" --target $BUILD_TARGET -- ${test_binary_args[*]}
-    RES=$?
-else
-    exit $RES
-fi
-
-if [ $RES -eq 0 ]; then
-    time cargo test $features "live_migration_sequential::$test_filter" --target $BUILD_TARGET -- --test-threads=1 ${test_binary_args[*]}
-    RES=$?
-else
-    exit $RES
 fi
 
 exit $RES

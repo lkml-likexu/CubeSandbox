@@ -30,7 +30,8 @@ build_edk2() {
     checkout_repo "$EDK2_PLAT_DIR" "$EDK2_PLAT_REPO" master "8227e9e9f6a8aefbd772b40138f835121ccb2307"
     checkout_repo "$ACPICA_DIR" "$ACPICA_REPO" master "b9c69f81a05c45611c91ea9cbce8756078d76233"
 
-    if [[ ! -f "$EDK2_DIR/.built" || \
+    if [[ ! -f "$WORKLOADS_DIR/CLOUDHV_EFI.fd" || \
+          ! -f "$EDK2_DIR/.built" || \
           ! -f "$EDK2_PLAT_DIR/.built" || \
           ! -f "$ACPICA_DIR/.built" ]]; then
         pushd "$EDK2_BUILD_DIR"

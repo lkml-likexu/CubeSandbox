@@ -2,6 +2,100 @@
 hypervisor="kvm"
 test_filter=""
 quick_mode="false"
+prepare_offline="false"
+live_migration_only="false"
+test_threads=""
+
+workload_url() {
+    local filename="$1"
+    local public_url="$2"
+
+    if [ -n "${WORKLOADS_BASE_URL:-}" ]; then
+        printf '%s/%s\n' "${WORKLOADS_BASE_URL%/}" "$filename"
+    else
+        printf '%s\n' "$public_url"
+    fi
+}
+
+acquire_workload() {
+    local filename="$1"
+    local public_url="$2"
+    local destination="$WORKLOADS_DIR/$filename"
+
+    [ -f "$destination" ] && return
+    if [ "${CH_OFFLINE:-false}" = "true" ]; then
+        echo "Offline workload is missing: $destination" >&2
+        return 1
+    fi
+
+    local url
+    url=$(workload_url "$filename" "$public_url")
+    [ -n "$url" ] || {
+        echo "No download URL available for workload: $filename" >&2
+        return 1
+    }
+    time wget --quiet "$url" -O "$destination" || {
+        rm -f "$destination"
+        return 1
+    }
+}
+
+require_offline_workloads() {
+    [ "${CH_OFFLINE:-false}" = "true" ] || return 0
+
+    local filename
+    local missing=()
+    for filename in "$@"; do
+        [ -f "$WORKLOADS_DIR/$filename" ] || missing+=("$filename")
+    done
+    if [ ${#missing[@]} -ne 0 ]; then
+        printf 'Offline workloads missing from %s:\n' "$WORKLOADS_DIR" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        return 1
+    fi
+}
+
+load_custom_x86_artifacts() {
+    CUSTOM_X86_ARTIFACTS="${CH_CUSTOM_X86_ARTIFACTS:-}"
+    if [ -f "$WORKLOADS_DIR/.custom_x86_artifacts" ]; then
+        CUSTOM_X86_ARTIFACTS=$(< "$WORKLOADS_DIR/.custom_x86_artifacts")
+    fi
+
+    local artifact
+    local artifacts=()
+    IFS=, read -r -a artifacts <<< "$CUSTOM_X86_ARTIFACTS"
+    for artifact in "${artifacts[@]}"; do
+        [ -z "$artifact" ] && continue
+        case "$artifact" in
+        hypervisor-fw | CLOUDHV.fd | bionic-server-cloudimg-amd64.qcow2 | focal-server-cloudimg-amd64-custom-20210609-0.qcow2 | jammy-server-cloudimg-amd64-custom-20220329-0.qcow2 | alpine-minirootfs-x86_64.tar.gz | vmlinux | virtiofsd) ;;
+        *)
+            echo "Unknown custom x86 artifact: $artifact" >&2
+            return 1
+            ;;
+        esac
+    done
+}
+
+load_custom_aarch64_artifacts() {
+    CUSTOM_AARCH64_ARTIFACTS="${CH_CUSTOM_AARCH64_ARTIFACTS:-}"
+    if [ -f "$WORKLOADS_DIR/.custom_aarch64_artifacts" ]; then
+        CUSTOM_AARCH64_ARTIFACTS=$(< "$WORKLOADS_DIR/.custom_aarch64_artifacts")
+    fi
+
+    local artifact
+    local artifacts=()
+    IFS=, read -r -a artifacts <<< "$CUSTOM_AARCH64_ARTIFACTS"
+    for artifact in "${artifacts[@]}"; do
+        [ -z "$artifact" ] && continue
+        case "$artifact" in
+        bionic-server-cloudimg-arm64.img | focal-server-cloudimg-arm64-custom-20210929-0.raw | focal-server-cloudimg-arm64-custom-20210929-0.qcow2 | jammy-server-cloudimg-arm64-custom-20220329-0.raw | jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 | alpine-minirootfs-aarch64.tar.gz | cloud-hypervisor-static-aarch64) ;;
+        *)
+            echo "Unknown custom aarch64 artifact: $artifact" >&2
+            return 1
+            ;;
+        esac
+    done
+}
 
 # Checkout source code of a GIT repo with specified branch and commit
 # Args:
@@ -75,6 +169,9 @@ cmd_help() {
     echo "    --hypervisor  Underlying hypervisor. Options kvm, mshv"
     echo "    --test-filter Tests to run"
     echo "    --quick       Run only core smoke tests (5 priority levels)"
+    echo "    --test-threads Number of concurrent tests in parallel suites"
+    echo "    --prepare-offline Prepare dependencies without running tests"
+    echo "    --live-migration-only Run only live migration tests"
     echo ""
     echo "    --help        Display this help message."
     echo ""
@@ -94,6 +191,16 @@ process_common_args() {
                 ;;
             "--quick")
                 quick_mode="true"
+                ;;
+            "--test-threads")
+                shift
+                test_threads="$1"
+                ;;
+            "--prepare-offline")
+                prepare_offline="true"
+                ;;
+            "--live-migration-only")
+                live_migration_only="true"
                 ;;
             "--") {
                 shift
