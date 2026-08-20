@@ -159,6 +159,13 @@ grep -q 'must be an http(s) URL' "$TMP_DIR/url.out"
 : > "$DOCKER_LOG"
 mkdir -p "$TMP_DIR/home/workloads"
 printf workload > "$TMP_DIR/home/workloads/vmlinux"
+cat > "$TMP_DIR/bin/pigz" <<'EOF'
+#!/bin/bash
+printf 'pigz\n' >> "$PIGZ_LOG"
+exec /usr/bin/gzip "$@"
+EOF
+chmod +x "$TMP_DIR/bin/pigz"
+export PIGZ_LOG="$TMP_DIR/pigz.log"
 cat > "$TMP_DIR/bin/cp" <<'EOF'
 #!/bin/bash
 [ "$1" = "-a" ] && shift
@@ -178,8 +185,9 @@ chmod +x "$TMP_DIR/bin/cp"
     HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
-BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-x86_64.tar.gz' -print -quit)
+BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-x86_64.tgz' -print -quit)
 test -n "$BUNDLE"
+grep -q '^pigz$' "$PIGZ_LOG"
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
 grep -q 'run_integration_tests_live_migration.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
 grep -q '^save -o .*/docker/cloud-hypervisor-dev-image.tar ghcr.io/cloud-hypervisor/cloud-hypervisor:20240507-0$' "$DOCKER_LOG"
@@ -230,7 +238,7 @@ printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
         CH_X86_VIRTIOFSD_FILE="$CUSTOM_ARTIFACTS/virtiofsd" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
-CUSTOM_BUNDLE=$(find "$CUSTOM_BUNDLE_OUTPUT" -name 'cloud-hypervisor-offline-*-x86_64.tar.gz' -print -quit)
+CUSTOM_BUNDLE=$(find "$CUSTOM_BUNDLE_OUTPUT" -name 'cloud-hypervisor-offline-*-x86_64.tgz' -print -quit)
 test -n "$CUSTOM_BUNDLE"
 test "$(tar -xOf "$CUSTOM_BUNDLE" ./workloads/hypervisor-fw)" = 'custom-hypervisor-fw'
 test "$(tar -xOf "$CUSTOM_BUNDLE" ./workloads/vmlinux)" = 'custom-vmlinux'
@@ -268,7 +276,7 @@ grep -q 'CH_WORKLOADS_DIR must be an absolute path' "$TMP_DIR/path.out"
     MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
-ARM_BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-aarch64.tar.gz' -print -quit)
+ARM_BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-aarch64.tgz' -print -quit)
 test -n "$ARM_BUNDLE"
 grep -q 'run_integration_tests_aarch64.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
 if grep -q 'run_integration_tests_live_migration.sh .*--prepare-offline' "$DOCKER_LOG"; then
@@ -298,7 +306,7 @@ printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
         CH_CLOUD_HYPERVISOR_STATIC_ARM64_FILE="$CUSTOM_ARTIFACTS/cloud-hypervisor-static-aarch64" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
-ARM_CUSTOM_BUNDLE=$(find "$ARM_CUSTOM_OUTPUT" -name 'cloud-hypervisor-offline-*-aarch64.tar.gz' -print -quit)
+ARM_CUSTOM_BUNDLE=$(find "$ARM_CUSTOM_OUTPUT" -name 'cloud-hypervisor-offline-*-aarch64.tgz' -print -quit)
 test -n "$ARM_CUSTOM_BUNDLE"
 test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/bionic-server-cloudimg-arm64.img)" = 'custom-bionic-arm64.img'
 test "$(tar -xOf "$ARM_CUSTOM_BUNDLE" ./workloads/cloud-hypervisor-static-aarch64)" = 'custom-cloud-hypervisor-static-aarch64'

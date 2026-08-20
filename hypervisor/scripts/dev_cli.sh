@@ -856,7 +856,7 @@ prepare_offline_bundle() {
     dirty=false
     [ -z "$(git -C "$CLH_ROOT_DIR" status --porcelain)" ] || dirty=true
     created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-    output="$PWD/cloud-hypervisor-offline-${short_commit}-${architecture}.tar.gz"
+    output="$PWD/cloud-hypervisor-offline-${short_commit}-${architecture}.tgz"
 
     OFFLINE_BUNDLE_STAGE=$(mktemp -d)
     OFFLINE_BUNDLE_TEMP="${output}.tmp.$$"
@@ -879,7 +879,7 @@ prepare_offline_bundle() {
     while IFS= read -r -d '' source_file; do
         [ -e "$CUBESANDBOX_DIR/$source_file" ] || [ -L "$CUBESANDBOX_DIR/$source_file" ] || continue
         case "$source_file" in
-        cloud-hypervisor-offline-*.tar.gz | cloud-hypervisor-offline-*.tar.gz.tmp.* | */cloud-hypervisor-offline-*.tar.gz | */cloud-hypervisor-offline-*.tar.gz.tmp.* | *.dev_cli.log.txt | */*.dev_cli.log.txt) continue ;;
+        cloud-hypervisor-offline-*.tgz | cloud-hypervisor-offline-*.tgz.tmp.* | */cloud-hypervisor-offline-*.tgz | */cloud-hypervisor-offline-*.tgz.tmp.* | cloud-hypervisor-offline-*.tar.gz | cloud-hypervisor-offline-*.tar.gz.tmp.* | */cloud-hypervisor-offline-*.tar.gz | */cloud-hypervisor-offline-*.tar.gz.tmp.* | *.dev_cli.log.txt | */*.dev_cli.log.txt) continue ;;
         esac
         printf '%s\0' "$source_file"
     done < "$git_source_list" > "$source_list" ||
@@ -922,8 +922,14 @@ EOF
         cd "$OFFLINE_BUNDLE_STAGE" || exit 1
         find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
     ) || die "Failed to generate offline bundle checksums."
-    tar -C "$OFFLINE_BUNDLE_STAGE" -czf "$OFFLINE_BUNDLE_TEMP" . ||
-        die "Failed to create offline bundle archive."
+    if command -v pigz >/dev/null 2>&1; then
+        tar --use-compress-program=pigz -cvpf "$OFFLINE_BUNDLE_TEMP" \
+            -C "$OFFLINE_BUNDLE_STAGE" . ||
+            die "Failed to create offline bundle archive."
+    else
+        tar -C "$OFFLINE_BUNDLE_STAGE" -czf "$OFFLINE_BUNDLE_TEMP" . ||
+            die "Failed to create offline bundle archive."
+    fi
     tar -tzf "$OFFLINE_BUNDLE_TEMP" >/dev/null ||
         die "Failed to verify offline bundle archive."
     mv "$OFFLINE_BUNDLE_TEMP" "$output" ||

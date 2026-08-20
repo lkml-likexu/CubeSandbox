@@ -181,8 +181,8 @@ CH_WORKLOADS_DIR=/srv/cloud-hypervisor-workloads
 6. 导出容器镜像并在当前目录生成与本机架构匹配的归档：
 
 ```text
-cloud-hypervisor-offline-<short-commit>-x86_64.tar.gz
-cloud-hypervisor-offline-<short-commit>-aarch64.tar.gz
+cloud-hypervisor-offline-<short-commit>-x86_64.tgz
+cloud-hypervisor-offline-<short-commit>-aarch64.tgz
 ```
 
 两个 Bundle 需分别生成：
@@ -214,11 +214,11 @@ CubeSandbox/hypervisor/target/    # 存在时包含
 
 ```bash
 ARCH=$(uname -m)
-sha256sum cloud-hypervisor-offline-*-${ARCH}.tar.gz \
+sha256sum cloud-hypervisor-offline-*-${ARCH}.tgz \
   > cloud-hypervisor-offline.sha256
 ```
 
-将 `.tar.gz` 和校验文件传输到离线测试机。Bundle 已包含生成时的当前源码工作树。
+将 `.tgz` 和校验文件传输到离线测试机。Bundle 已包含生成时的当前源码工作树。
 
 ## 在离线机器恢复 Bundle
 
@@ -233,7 +233,7 @@ sha256sum --check cloud-hypervisor-offline.sha256
 mkdir extracted
 ARCH=$(uname -m)
 BUNDLE=$(find . -maxdepth 1 \
-  -name "cloud-hypervisor-offline-*-${ARCH}.tar.gz" \
+  -name "cloud-hypervisor-offline-*-${ARCH}.tgz" \
   -print -quit)
 tar -xzf "$BUNDLE" -C extracted
 cd extracted
