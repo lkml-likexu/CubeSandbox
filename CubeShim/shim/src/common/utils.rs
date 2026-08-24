@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json;
 use tokio::{
     fs::OpenOptions,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixDatagram, UnixStream},
 };
 use ttrpc::r#async::Client;
@@ -47,6 +47,12 @@ const SNAPSHOT_BASE_DIR: &str = "/usr/local/services/cubetoolbox/cube-snapshot";
 
 const DEV_URANDOM: &str = "/dev/urandom";
 
+const AGENT_CONNECT_REQUEST: &[u8] = b"CONNECT 1024\n";
+const AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const AGENT_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
+const AGENT_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+const AGENT_CONNECT_RETRY_MAX_INTERVAL: Duration = Duration::from_millis(250);
+const AGENT_CONNECT_RESPONSE_MAX_LEN: usize = 64;
 const PASSFD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PASSFD_ACK_MAX_LINE_LEN: usize = 64;
 
@@ -516,37 +522,109 @@ impl Utils {
 impl AsyncUtils {
     pub const PASSFD_LISTENER_PORT: u32 = 1027;
 
+    async fn connect_agent_once(addr: &Path) -> CResult<UnixStream> {
+        let mut stream = UnixStream::connect(addr)
+            .await
+            .map_err(|e| format!("connect {:?} failed: {}", addr, e))?;
+        stream
+            .write_all(AGENT_CONNECT_REQUEST)
+            .await
+            .map_err(|e| format!("send CONNECT failed: {}", e))?;
+
+        let mut response = Vec::with_capacity(AGENT_CONNECT_RESPONSE_MAX_LEN);
+        let reader = BufReader::with_capacity(AGENT_CONNECT_RESPONSE_MAX_LEN, stream);
+        let mut limited = reader.take((AGENT_CONNECT_RESPONSE_MAX_LEN + 1) as u64);
+        let len = limited
+            .read_until(b'\n', &mut response)
+            .await
+            .map_err(|e| format!("read response failed: {}", e))?;
+        if len == 0 {
+            return Err("EOF before response".to_string());
+        }
+        if len > AGENT_CONNECT_RESPONSE_MAX_LEN {
+            return Err(format!(
+                "response exceeds {} bytes",
+                AGENT_CONNECT_RESPONSE_MAX_LEN
+            ));
+        }
+        let response =
+            std::str::from_utf8(&response).map_err(|e| format!("response is not UTF-8: {}", e))?;
+        if !response.starts_with("OK ") {
+            return Err(format!("unexpected response: {:?}", response.trim()));
+        }
+
+        Ok(limited.into_inner().into_inner())
+    }
+
+    async fn connect_agent_stream_with_retry(
+        addr: &Path,
+        timeout: Duration,
+        attempt_timeout: Duration,
+        retry_interval: Duration,
+    ) -> CResult<UnixStream> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_err = String::from("not attempted");
+        let mut retry_delay = retry_interval;
+
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(
+                std::cmp::min(attempt_timeout, remaining),
+                Self::connect_agent_once(addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => return Ok(stream),
+                Ok(Err(e)) => last_err = e,
+                Err(_) => {
+                    last_err = format!(
+                        "handshake timed out after {}ms",
+                        attempt_timeout.as_millis()
+                    )
+                }
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::time::sleep(std::cmp::min(retry_delay, remaining)).await;
+            retry_delay = std::cmp::min(
+                retry_delay.saturating_mul(2),
+                AGENT_CONNECT_RETRY_MAX_INTERVAL,
+            );
+        }
+
+        Err(format!(
+            "Connect agent failed at {:?} after {}ms: {}",
+            addr,
+            timeout.as_millis(),
+            last_err
+        ))
+    }
+
+    fn agent_client(stream: UnixStream) -> CResult<Client> {
+        let nfd = nix::unistd::dup(stream.as_raw_fd())
+            .map_err(|e| format!("dup agent connection failed: {}", e))?;
+        drop(stream);
+        Ok(Client::new(nfd))
+    }
+
     pub async fn connect_agent(sandbox_id: &String) -> CResult<Client> {
         let addr = Utils::vsock_path(sandbox_id);
+        Self::agent_client(Self::connect_agent_once(&addr).await?)
+    }
 
-        let mut stream = UnixStream::connect(&addr)
-            .await
-            .map_err(|e| format!("Connect agent failed at {:?}: {}", addr, e))?;
-        let req = "CONNECT 1024\n";
-        stream
-            .write_all(req.as_bytes())
-            .await
-            .map_err(|e| format!("Send connect cmd failed:{}", e))?;
-
-        let mut buffer = Vec::new();
-        let len = stream
-            .read_buf(&mut buffer)
-            .await
-            .map_err(|e| format!("Recv connect rsp failed:{}", e))?;
-        if len < 2 {
-            return Err(format!("Recv len invalid:{}", len));
-        }
-        let rsp = String::from_utf8(buffer[..len].to_vec()).unwrap();
-
-        if !rsp.contains("OK") {
-            return Err(format!("Connect failed rsp:{}", rsp));
-        }
-
-        let nfd = nix::unistd::dup(stream.as_raw_fd()).unwrap();
-        std::mem::drop(stream);
-
-        let conn = Client::new(nfd);
-        Ok(conn)
+    pub async fn connect_agent_with_retry(sandbox_id: &String) -> CResult<Client> {
+        let addr = Utils::vsock_path(sandbox_id);
+        let stream = Self::connect_agent_stream_with_retry(
+            &addr,
+            AGENT_CONNECT_TIMEOUT,
+            AGENT_CONNECT_ATTEMPT_TIMEOUT,
+            AGENT_CONNECT_RETRY_INTERVAL,
+        )
+        .await?;
+        Self::agent_client(stream)
     }
 
     pub async fn passfd_connect_many(
@@ -777,6 +855,89 @@ mod tests {
             result.unwrap_err(),
             "passfd connection timed out after 0.01 seconds"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_handshake_reports_eof() {
+        let dir = std::env::temp_dir().join(format!(
+            "cube-agent-eof-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; AGENT_CONNECT_REQUEST.len()];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(request, AGENT_CONNECT_REQUEST);
+        });
+
+        let err = AsyncUtils::connect_agent_once(&path).await.unwrap_err();
+        assert_eq!(err, "EOF before response");
+        server.await.unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_handshake_accepts_fragmented_ok_response() {
+        let dir = std::env::temp_dir().join(format!(
+            "cube-agent-ok-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; AGENT_CONNECT_REQUEST.len()];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(request, AGENT_CONNECT_REQUEST);
+            stream.write_all(b"O").await.unwrap();
+            tokio::task::yield_now().await;
+            stream.write_all(b"K 1073741826\n").await.unwrap();
+        });
+
+        let stream = AsyncUtils::connect_agent_once(&path).await.unwrap();
+        drop(stream);
+        server.await.unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_connect_retries_after_eof() {
+        let dir = std::env::temp_dir().join(format!(
+            "cube-agent-retry-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; AGENT_CONNECT_REQUEST.len()];
+            first.read_exact(&mut request).await.unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            second.read_exact(&mut request).await.unwrap();
+            second.write_all(b"OK 1073741827\n").await.unwrap();
+        });
+
+        let stream = AsyncUtils::connect_agent_stream_with_retry(
+            &path,
+            Duration::from_secs(1),
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+        drop(stream);
+        server.await.unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

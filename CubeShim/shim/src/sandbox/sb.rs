@@ -220,7 +220,7 @@ impl SandBox {
     }
 
     async fn connect_agent(&mut self) -> CResult<()> {
-        let conn = AsyncUtils::connect_agent(&self.id).await?;
+        let conn = AsyncUtils::connect_agent_with_retry(&self.id).await?;
         let client = agent_ttrpc::AgentServiceClient::new(conn.clone());
         self.conn = Some(Arc::new(Mutex::new(conn)));
         self.client = Some(Arc::new(Mutex::new(client)));
@@ -564,7 +564,7 @@ impl SandBox {
         let (tx, mut rx) = channel::<()>(1);
         let arc_conainers = self.containers.clone();
         let arc_state = self.state.clone();
-        let conn = AsyncUtils::connect_agent(&self.id).await?;
+        let conn = AsyncUtils::connect_agent_with_retry(&self.id).await?;
         let client = health_ttrpc::HealthClient::new(conn);
         let log = self.log.clone();
         let handle = tokio::spawn(async move {
