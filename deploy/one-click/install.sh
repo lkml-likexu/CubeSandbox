@@ -1783,9 +1783,11 @@ elif [[ -n "${CUBE_EXTERNAL_REDIS_HOST}" ]]; then
   remove_env_kv "${RUNTIME_ENV_FILE}" "CUBE_PROXY_REDIS_SENTINEL_NODES"
   remove_env_kv "${RUNTIME_ENV_FILE}" "CUBE_PROXY_REDIS_SENTINEL_PASSWORD"
 else
-  # Back to bundled local Redis: drop every external Redis marker so
+  # Back to bundled local Redis: persist the credential shared by support
+  # services and host processes, then drop every external Redis marker so
   # up-support / proxy / LCM do not keep skipping the local container or
   # wiring Sentinel from a previous install.
+  upsert_env_kv "${RUNTIME_ENV_FILE}" "CUBE_SANDBOX_REDIS_PASSWORD" "${CUBE_SANDBOX_REDIS_PASSWORD:-ceuhvu123}"
   remove_env_kv "${RUNTIME_ENV_FILE}" "CUBE_EXTERNAL_REDIS_MASTER_NAME"
   remove_env_kv "${RUNTIME_ENV_FILE}" "CUBE_EXTERNAL_REDIS_SENTINEL_NODES"
   remove_env_kv "${RUNTIME_ENV_FILE}" "CUBE_EXTERNAL_REDIS_SENTINEL_PASSWORD"

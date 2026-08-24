@@ -926,6 +926,7 @@ test_external_redis_sentinel_wiring() {
   local proxy_compose="${ONE_CLICK_DIR}/cubeproxy/docker-compose.yaml.template"
   local lcm_compose="${ONE_CLICK_DIR}/cube-lifecycle-manager/docker-compose.yaml.template"
   local postcheck="${ONE_CLICK_DIR}/scripts/systemd/redis-postcheck.sh"
+  local cubeops_start="${ONE_CLICK_DIR}/scripts/systemd/cubeops-start.sh"
 
   assert_contains "${env_example}" "CUBE_EXTERNAL_REDIS_MASTER_NAME"
   assert_contains "${env_example}" "CUBE_EXTERNAL_REDIS_SENTINEL_NODES"
@@ -993,8 +994,13 @@ test_external_redis_sentinel_wiring() {
   # Leaving Sentinel mode must scrub conf.yaml keys (env side uses remove_env_kv).
   assert_contains "${install_sh}" "removing stale Redis Sentinel keys from conf.yaml"
   assert_contains "${install_sh}" "/^  master_name:/d; /^  sentinel_nodes:/d; /^  sentinel_password:/d"
-  # Back to bundled Redis must also drop external Redis markers from .one-click.env.
-  assert_contains "${install_sh}" "Back to bundled local Redis: drop every external Redis marker"
+  # Back to bundled Redis must persist its shared credential and drop external markers.
+  assert_contains "${install_sh}" 'upsert_env_kv "${RUNTIME_ENV_FILE}" "CUBE_SANDBOX_REDIS_PASSWORD" "${CUBE_SANDBOX_REDIS_PASSWORD:-ceuhvu123}"'
+  assert_contains "${install_sh}" "then drop every external Redis marker"
+  # CubeOps must use the same bundled default as up-support while preserving
+  # external-over-local credential precedence.
+  assert_contains "${cubeops_start}" 'REDIS_PASSWORD="${CUBE_EXTERNAL_REDIS_PASSWORD:-${CUBE_SANDBOX_REDIS_PASSWORD:-ceuhvu123}}"'
+  assert_contains "${up_support}" 'REDIS_PASSWORD="${CUBE_SANDBOX_REDIS_PASSWORD:-ceuhvu123}"'
   # SENTINEL lookup must reuse credentials without putting the password in argv.
   assert_contains "${install_sh}" 'REDISCLI_AUTH="${sentinel_pd}"'
   # Leaving Sentinel for bundled Redis must restore password as well as nodes.
