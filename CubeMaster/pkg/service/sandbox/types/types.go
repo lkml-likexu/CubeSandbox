@@ -576,8 +576,6 @@ type SandboxBriefData struct {
 	PauseStatus     string             `json:"pause_status,omitempty"`
 	CpuCount        int32              `json:"cpu_count,omitempty"`
 	MemoryMB        int32              `json:"memory_mb,omitempty"`
-	CPUMilli        int32              `json:"cpu_milli,omitempty"`
-	MemoryMiB       int32              `json:"memory_mib,omitempty"`
 	Annotations     map[string]string  `json:"annotations,omitempty"`
 	Labels          map[string]string  `json:"labels,omitempty"`
 	NameSpace       string             `json:"namespace,omitempty"`
@@ -634,8 +632,6 @@ type ContainerInfo struct {
 	CreateAt    int64  `json:"create_at,omitempty"`
 	Cpu         string `json:"cpu,omitempty"`
 	Mem         string `json:"mem,omitempty"`
-	CpuMilli    int32  `json:"cpu_milli,omitempty"`
-	MemoryMiB   int32  `json:"memory_mib,omitempty"`
 	Type        string `json:"type,omitempty"`
 	PauseAt     int64  `json:"pause_at,omitempty"`
 }

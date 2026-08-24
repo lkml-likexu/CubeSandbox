@@ -22,20 +22,15 @@ type Sandbox struct {
 
 // SandboxInfo is returned by list and get-info endpoints.
 type SandboxInfo struct {
-	TemplateID  string     `json:"templateID"`
-	Alias       string     `json:"alias,omitempty"`
-	SandboxID   string     `json:"sandboxID"`
-	ClientID    string     `json:"clientID"`
-	StartedAt   time.Time  `json:"startedAt"`
-	EndAt       *time.Time `json:"endAt,omitempty"`
-	EnvdVersion string     `json:"envdVersion"`
-	Domain      string     `json:"domain,omitempty"`
-	CPUCount    int        `json:"cpuCount"`
-	// CPUMilli is the exact CPU allocation in millicores (e.g. 500 for 0.5
-	// vCPU). It is nil when the server omits it; CPUCount truncates sub-core
-	// values to 0, so prefer CPUMilli for fractional CPU.
-	CPUMilli *int `json:"cpuMilli,omitempty"`
-	// MemoryMB is memory in MiB; the historical field name is retained.
+	TemplateID   string            `json:"templateID"`
+	Alias        string            `json:"alias,omitempty"`
+	SandboxID    string            `json:"sandboxID"`
+	ClientID     string            `json:"clientID"`
+	StartedAt    time.Time         `json:"startedAt"`
+	EndAt        *time.Time        `json:"endAt,omitempty"`
+	EnvdVersion  string            `json:"envdVersion"`
+	Domain       string            `json:"domain,omitempty"`
+	CPUCount     int               `json:"cpuCount"`
 	MemoryMB     int               `json:"memoryMB"`
 	DiskSizeMB   *int              `json:"diskSizeMB,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
