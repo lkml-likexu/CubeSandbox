@@ -359,6 +359,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_list_forwards_backend_filter_to_cubemaster() {
+        use axum::{extract::Query, routing::get};
+        use std::collections::HashMap;
+
+        async fn list_handler(Query(query): Query<HashMap<String, String>>) -> Json<Value> {
+            Json(serde_json::json!({
+                "RequestID": "list-request",
+                "ret": { "ret_code": 0, "ret_msg": "success" },
+                "data": [],
+                "next_token": query.get("backend").cloned().unwrap_or_default(),
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock CubeMaster listener should bind");
+        let address = listener.local_addr().expect("mock CubeMaster address");
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/cube/snapshot", get(list_handler)),
+            )
+            .await
+            .expect("mock CubeMaster server should run");
+        });
+
+        let mut config = ServerConfig::default();
+        config.cubemaster_url = format!("http://{address}");
+        let state = AppState::new(config, arc(NoopLogger)).await;
+        let server = TestServer::new(build_router(state)).expect("router should build");
+
+        for backend in ["s3", "xfs"] {
+            let response = server
+                .get("/snapshots")
+                .add_query_param("backend", backend)
+                .await;
+            response.assert_status_ok();
+            assert_eq!(response.header("x-next-token"), backend);
+        }
+
+        let response = server.get("/snapshots").await;
+        response.assert_status_ok();
+        assert!(response.maybe_header("x-next-token").is_none());
+
+        for backend in ["", "S3", "unsupported"] {
+            let response = server
+                .get("/snapshots")
+                .add_query_param("backend", backend)
+                .await;
+            assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
     async fn template_alias_route_is_mounted_before_template_id_route() {
         let server = test_server().await;
 

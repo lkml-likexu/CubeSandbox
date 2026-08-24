@@ -75,7 +75,10 @@ func ListSnapshots(ctx context.Context, opts *ListSnapshotsOptions) ([]SnapshotI
 	if err != nil {
 		return nil, "", err
 	}
-	normalized := normalizeListSnapshotsOptions(opts)
+	normalized, err := normalizeListSnapshotsOptions(opts)
+	if err != nil {
+		return nil, "", err
+	}
 	filtered := make([]SnapshotInfo, 0, len(rows))
 	for i := range rows {
 		rec := &rows[i]
@@ -304,18 +307,24 @@ func normalizeSnapshotOperationName(operation string) string {
 	}
 }
 
-func normalizeListSnapshotsOptions(opts *ListSnapshotsOptions) ListSnapshotsOptions {
+func normalizeListSnapshotsOptions(opts *ListSnapshotsOptions) (ListSnapshotsOptions, error) {
 	normalized := ListSnapshotsOptions{
 		Limit: 20,
 	}
 	if opts == nil {
-		return normalized
+		return normalized, nil
 	}
 	normalized.SnapshotID = strings.TrimSpace(opts.SnapshotID)
 	normalized.SandboxID = strings.TrimSpace(opts.SandboxID)
 	normalized.Name = strings.TrimSpace(opts.Name)
 	normalized.Status = strings.TrimSpace(opts.Status)
-	normalized.Backend = strings.TrimSpace(opts.Backend)
+	if strings.TrimSpace(opts.Backend) != "" {
+		backend, err := constants.NormalizeSnapshotBackend(opts.Backend)
+		if err != nil {
+			return ListSnapshotsOptions{}, err
+		}
+		normalized.Backend = backend
+	}
 	normalized.NextToken = strings.TrimSpace(opts.NextToken)
 	if opts.Limit > 0 {
 		normalized.Limit = opts.Limit
@@ -323,7 +332,7 @@ func normalizeListSnapshotsOptions(opts *ListSnapshotsOptions) ListSnapshotsOpti
 	if normalized.Limit > 100 {
 		normalized.Limit = 100
 	}
-	return normalized
+	return normalized, nil
 }
 
 func matchesSnapshotRecordListOptions(rec *models.SnapshotRecord, opts ListSnapshotsOptions) bool {
@@ -339,8 +348,11 @@ func matchesSnapshotRecordListOptions(rec *models.SnapshotRecord, opts ListSnaps
 	if opts.Name != "" && !strings.EqualFold(strings.TrimSpace(rec.DisplayName), opts.Name) {
 		return false
 	}
-	if opts.Backend != "" && !strings.EqualFold(strings.TrimSpace(rec.Backend), opts.Backend) {
-		return false
+	if opts.Backend != "" {
+		backend, err := constants.NormalizeSnapshotBackend(rec.Backend)
+		if err != nil || backend != opts.Backend {
+			return false
+		}
 	}
 	if opts.Status != "" {
 		if !strings.EqualFold(strings.TrimSpace(rec.Status), opts.Status) {

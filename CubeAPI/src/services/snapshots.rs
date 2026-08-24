@@ -82,6 +82,7 @@ impl SnapshotService {
         sandbox_id: Option<&str>,
         limit: Option<i32>,
         next_token: Option<&str>,
+        backend: Option<&str>,
     ) -> AppResult<(Vec<SnapshotListItem>, String)> {
         let req = ListSnapshotsRequest {
             request_id: new_request_id(),
@@ -89,6 +90,7 @@ impl SnapshotService {
             sandbox_id: sandbox_id.map(str::to_string),
             name: None,
             status: None,
+            backend: backend.map(str::to_string),
             limit,
             // Normalise an empty cursor (e.g. the client sent `?nextToken=`)
             // back to `None` so we don't relay a meaningless pagination token

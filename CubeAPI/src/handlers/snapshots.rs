@@ -10,7 +10,7 @@ use axum::{
 };
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     models::{ApiError, CreateSnapshotRequest, ListSnapshotsQuery, RollbackRequest, SnapshotInfo},
     state::AppState,
 };
@@ -67,10 +67,12 @@ pub async fn list_snapshots(
     State(state): State<AppState>,
     Query(params): Query<ListSnapshotsQuery>,
 ) -> AppResult<impl IntoResponse> {
+    let backend = normalize_backend_filter(params.backend.as_deref())?;
     tracing::debug!(
         sandbox_id = ?params.sandbox_id,
         limit = ?params.limit,
         next_token = ?params.next_token,
+        backend = ?backend,
         "list_snapshots"
     );
 
@@ -81,6 +83,7 @@ pub async fn list_snapshots(
             params.sandbox_id.as_deref(),
             params.limit,
             params.next_token.as_deref(),
+            backend,
         )
         .await?;
 
@@ -92,6 +95,19 @@ pub async fn list_snapshots(
     }
 
     Ok((StatusCode::OK, headers, Json(items)))
+}
+
+fn normalize_backend_filter(backend: Option<&str>) -> AppResult<Option<&str>> {
+    match backend {
+        None => Ok(None),
+        Some(value) => match value.trim() {
+            "xfs" => Ok(Some("xfs")),
+            "s3" => Ok(Some("s3")),
+            _ => Err(AppError::BadRequest(
+                "backend must be one of: xfs, s3".to_string(),
+            )),
+        },
+    }
 }
 
 // Snapshot deletion is exposed exclusively through `DELETE /templates/{id}`

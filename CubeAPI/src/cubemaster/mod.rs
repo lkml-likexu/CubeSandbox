@@ -246,6 +246,9 @@ impl CubeMasterClient {
         if let Some(status) = &req.status {
             builder = builder.query(&[("status", status)]);
         }
+        if let Some(backend) = &req.backend {
+            builder = builder.query(&[("backend", backend)]);
+        }
         if let Some(limit) = req.limit {
             builder = builder.query(&[("limit", limit.to_string())]);
         }
@@ -1669,6 +1672,7 @@ pub struct ListSnapshotsRequest {
     pub sandbox_id: Option<String>,
     pub name: Option<String>,
     pub status: Option<String>,
+    pub backend: Option<String>,
     pub limit: Option<i32>,
     pub next_token: Option<String>,
 }
