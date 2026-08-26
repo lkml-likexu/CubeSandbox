@@ -293,6 +293,32 @@ struct VirtioPciDeviceState {
     interrupt_status: usize,
 }
 
+fn queue_ring_indices(queue: &Queue, memory: &GuestMemoryMmap) -> (String, String) {
+    let avail_idx = queue
+        .avail_idx(memory, Ordering::Acquire)
+        .map(|idx| idx.0.to_string())
+        .unwrap_or_else(|err| format!("unavailable({err:?})"));
+    let used_idx = queue
+        .used_idx(memory, Ordering::Acquire)
+        .map(|idx| idx.0.to_string())
+        .unwrap_or_else(|err| format!("unavailable({err:?})"));
+    (avail_idx, used_idx)
+}
+
+fn queue_software_indices(queue: &Queue, available: bool) -> (String, String) {
+    if available {
+        (
+            queue.next_avail().to_string(),
+            queue.next_used().to_string(),
+        )
+    } else {
+        (
+            "unavailable(owned_by_device_worker)".into(),
+            "unavailable(owned_by_device_worker)".into(),
+        )
+    }
+}
+
 pub struct VirtioPciDeviceActivator {
     interrupt: Option<Arc<dyn VirtioInterrupt>>,
     memory: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
@@ -503,6 +529,31 @@ impl VirtioPciDevice {
         }
 
         Ok(virtio_pci_device)
+    }
+
+    fn log_queue_state(&self, boundary: &str) {
+        let memory = self.memory.memory();
+        let software_indices_available = !self.device_activated.load(Ordering::Acquire);
+
+        for (queue_index, queue) in self.queues.iter().enumerate() {
+            let (memory_avail_idx, memory_used_idx) = queue_ring_indices(queue, memory.deref());
+            let (next_avail, next_used) = queue_software_indices(queue, software_indices_available);
+            info!(
+                "{}: virtqueue state at {}: queue_index={} ready={} size={} desc_table_gpa={:#x} avail_ring_gpa={:#x} used_ring_gpa={:#x} memory_avail_idx={} memory_used_idx={} next_avail={} next_used={}",
+                self.id,
+                boundary,
+                queue_index,
+                queue.ready(),
+                queue.size(),
+                queue.desc_table(),
+                queue.avail_ring(),
+                queue.used_ring(),
+                memory_avail_idx,
+                memory_used_idx,
+                next_avail,
+                next_used,
+            );
+        }
     }
 
     fn state(&self) -> VirtioPciDeviceState {
@@ -1182,6 +1233,7 @@ impl Snapshottable for VirtioPciDevice {
     }
 
     fn snapshot(&mut self) -> std::result::Result<Snapshot, MigratableError> {
+        self.log_queue_state("snapshot");
         let mut virtio_pci_dev_snapshot = Snapshot::new_from_state(&self.id, &self.state())?;
 
         // Snapshot PciConfiguration
@@ -1232,6 +1284,7 @@ impl Snapshottable for VirtioPciDevice {
                         e
                     ))
                 })?;
+            self.log_queue_state("restore");
 
             // Then we can activate the device, as we know at this point that
             // the virtqueues are in the right state and the device is ready
@@ -1252,3 +1305,62 @@ impl Snapshottable for VirtioPciDevice {
 }
 impl Transportable for VirtioPciDevice {}
 impl Migratable for VirtioPciDevice {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vm_memory::{Bytes, GuestMemory};
+
+    #[test]
+    fn queue_diagnostic_reads_memory_and_software_indices() {
+        const DESC_TABLE: u64 = 0x1000;
+        const AVAIL_RING: u64 = 0x2000;
+        const USED_RING: u64 = 0x3000;
+
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x4000)]).unwrap();
+        memory
+            .write_obj(17u16.to_le(), GuestAddress(AVAIL_RING + 2))
+            .unwrap();
+        memory
+            .write_obj(11u16.to_le(), GuestAddress(USED_RING + 2))
+            .unwrap();
+
+        let mut queue = Queue::new(256).unwrap();
+        queue.set_size(128);
+        queue
+            .try_set_desc_table_address(GuestAddress(DESC_TABLE))
+            .unwrap();
+        queue
+            .try_set_avail_ring_address(GuestAddress(AVAIL_RING))
+            .unwrap();
+        queue
+            .try_set_used_ring_address(GuestAddress(USED_RING))
+            .unwrap();
+        queue.set_next_avail(13);
+        queue.set_next_used(7);
+        queue.set_ready(true);
+
+        assert_eq!(
+            queue_ring_indices(&queue, &memory),
+            ("17".into(), "11".into())
+        );
+        assert_eq!(
+            queue_software_indices(&queue, true),
+            ("13".into(), "7".into())
+        );
+    }
+
+    #[test]
+    fn queue_diagnostic_reports_unreadable_ring_indices() {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0x1000), 0x1000)]).unwrap();
+        let queue = Queue::new(256).unwrap();
+
+        let (memory_avail_idx, memory_used_idx) = queue_ring_indices(&queue, &memory);
+        let (next_avail, next_used) = queue_software_indices(&queue, false);
+
+        assert!(memory_avail_idx.starts_with("unavailable("));
+        assert!(memory_used_idx.starts_with("unavailable("));
+        assert_eq!(next_avail, "unavailable(owned_by_device_worker)");
+        assert_eq!(next_used, "unavailable(owned_by_device_worker)");
+    }
+}
