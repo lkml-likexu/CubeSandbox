@@ -8,6 +8,7 @@ use nix::unistd::dup2;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
+use std::fmt;
 use std::io;
 use std::io::Write;
 use std::mem;
@@ -62,6 +63,15 @@ const LOG_DIR: &str = "/data/log/CubeShim/";
 const LOF_FILE: &str = "cube-shim-req.log";
 const STAT_FILE: &str = "cube-shim-stat.log";
 const ENV_FUNCTION_TYPE: &str = "FUNCTION_TYPE";
+
+fn write_best_effort(writer: &mut impl Write, args: fmt::Arguments<'_>) {
+    let _ = writer.write_fmt(args);
+}
+
+fn stderr_best_effort(args: fmt::Arguments<'_>) {
+    write_best_effort(&mut io::stderr().lock(), args);
+}
+
 #[derive(Clone, PartialEq, PartialOrd)]
 pub enum LogLevel {
     Debug,
@@ -221,7 +231,10 @@ impl Log {
                 format!("Panic:{:?}", panic_info),
                 panic_ft.clone(),
             ) {
-                eprintln!("log panic info failed:{:?} {:?}", panic_info, e);
+                stderr_best_effort(format_args!(
+                    "log panic info failed:{:?} {:?}\n",
+                    panic_info, e
+                ));
             }
             std::process::exit(-1);
         }));
@@ -272,39 +285,45 @@ impl Log {
                         }
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    errf!(log, "forward log failed read log error:{}", e);
-                    return;
-                }
                 Err(e) => {
                     errf!(log, "forward log error:{}", e);
-                    continue;
+                    return;
                 }
             }
         }
     }
-    async fn consumer(send: Sender<(LogType, String)>, mut recv: Receiver<(LogType, String)>) {
+    async fn consumer(send: Sender<(LogType, String)>, recv: Receiver<(LogType, String)>) {
         let mut log_file: PathBuf = PathBuf::from(LOG_DIR);
         log_file.push(LOF_FILE);
 
         let mut stat_file = PathBuf::from(LOG_DIR);
         stat_file.push(STAT_FILE);
 
-        tokio::spawn(async move {
-            loop {
-                let ret: Result<(), String> =
-                    Self::write_log_rotate(&mut recv, &log_file, &stat_file).await;
-                if let Err(e) = ret {
-                    eprintln!("write log failed:{}", e);
-                    sleep(Duration::from_secs(3)).await;
-                }
-            }
-        });
+        tokio::spawn(Self::consume_logs(recv, log_file, stat_file));
 
         loop {
             sleep(LOG_REOPEN_INTERVAL).await;
             if let Err(e) = send.send((LogType::Rotate, "".to_string())).await {
-                eprintln!("send rotate failed:{}", e);
+                stderr_best_effort(format_args!("send rotate failed:{}\n", e));
+                break;
+            }
+        }
+    }
+
+    async fn consume_logs(
+        mut recv: Receiver<(LogType, String)>,
+        log_file: PathBuf,
+        stat_file: PathBuf,
+    ) {
+        loop {
+            let ret: Result<(), String> =
+                Self::write_log_rotate(&mut recv, &log_file, &stat_file).await;
+            match ret {
+                Err(e) => {
+                    stderr_best_effort(format_args!("write log failed:{}\n", e));
+                    sleep(Duration::from_secs(3)).await;
+                }
+                Ok(()) => break,
             }
         }
     }
@@ -496,6 +515,40 @@ mod tests {
             let _ = fs::remove_file(&self.active);
             let _ = fs::remove_file(&self.rotated);
         }
+    }
+
+    struct FailedWriter;
+
+    impl Write for FailedWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed peer"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn diagnostic_write_ignores_closed_peer() {
+        write_best_effort(&mut FailedWriter, format_args!("diagnostic {}\n", 1));
+    }
+
+    #[tokio::test]
+    async fn closed_log_channel_terminates_consumer() {
+        let files = TestLogFiles::new();
+        let stat_file = test_log_path();
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            Log::consume_logs(receiver, files.active.clone(), stat_file.clone()),
+        )
+        .await
+        .expect("consumer did not terminate after channel closure");
+
+        let _ = fs::remove_file(stat_file);
     }
 
     #[tokio::test]
