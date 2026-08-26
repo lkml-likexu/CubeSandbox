@@ -29,8 +29,7 @@ use std::process::exit;
 use std::process::Command;
 use std::sync::atomic::{compiler_fence, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{AppSettings, Parser};
@@ -407,7 +406,7 @@ async fn start_sandbox(
 
     rx.await?;
 
-    thread::sleep(Duration::from_millis(5));
+    sync_filesystems_before_poweroff(&logger).await;
 
     let ret = unsafe { libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF) };
     if ret != 0 {
@@ -415,6 +414,27 @@ async fn start_sandbox(
     }
 
     Ok(())
+}
+
+async fn sync_filesystems_before_poweroff(logger: &Logger) {
+    let start = Instant::now();
+    info!(logger, "guest filesystem sync start");
+
+    // sync(2) covers every mounted writable filesystem, including the blk-cube
+    // rootfs. It is deliberately issued from the shutdown path after the
+    // DestroySandbox RPC has been acknowledged and before POWER_OFF starts
+    // resetting virtio devices. Do not detach this call behind an async
+    // timeout: sync(2) cannot be cancelled, and powering off while it still
+    // runs would recreate the writeback/reset race this path prevents.
+    unsafe {
+        libc::sync();
+    }
+
+    info!(
+        logger,
+        "guest filesystem sync finish";
+        "elapsed_ms" => start.elapsed().as_millis()
+    );
 }
 
 // init_agent_as_init will do the initializations such as setting up the rootfs
