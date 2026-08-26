@@ -37,7 +37,7 @@ use crate::common::{
 };
 use crate::container::container_mgr::ContainerInfo;
 use crate::container::{exec::Tty, Container, GUEST_DEV_SHM};
-use crate::hypervisor::config::{HypConfig, VmConfig};
+use crate::hypervisor::config::{add_x86_64_cmdlines, HypConfig, VmConfig};
 use crate::hypervisor::cube_hypervisor as CH;
 use crate::hypervisor::snapshot::{enable_snapshot, SnapshotInfo};
 use crate::log::{stat_defer, Log};
@@ -776,7 +776,7 @@ impl SandBox {
             vc.add_cmdline("quiet".to_string());
         }
         vc.add_cmdline("highres=off".to_string());
-        vc.add_cmdline("clocksource=kvm-clock".to_string());
+        add_x86_64_cmdlines(&mut vc.cmdlines, &["clocksource=kvm-clock"]);
         vc.add_cmdline("agent.unified_cgroup_hierarchy=true".to_string());
 
         // Add externally passed pmem
@@ -1652,18 +1652,20 @@ mod tests {
             .cmdlines
             .contains(&"another.param=foo".to_string()));
 
-        let mut set_expect: HashSet<String> = vec![
-            "highres=off",
-            "clocksource=kvm-clock",
-            "agent.unified_cgroup_hierarchy=true",
-        ]
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
-        let set_unexpect: HashSet<String> = vec!["clocksource=tsc", "tsc=reliable"]
+        let mut set_expect: HashSet<String> =
+            vec!["highres=off", "agent.unified_cgroup_hierarchy=true"]
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+        #[cfg(target_arch = "x86_64")]
+        set_expect.insert("clocksource=kvm-clock".to_string());
+
+        let mut set_unexpect: HashSet<String> = vec!["clocksource=tsc", "tsc=reliable"]
             .into_iter()
             .map(|s| s.to_string())
             .collect();
+        #[cfg(not(target_arch = "x86_64"))]
+        set_unexpect.insert("clocksource=kvm-clock".to_string());
 
         for cmd in vm_config.cmdlines.iter() {
             assert!(!set_unexpect.contains(cmd), "unexpect {} in cmdlines", cmd);

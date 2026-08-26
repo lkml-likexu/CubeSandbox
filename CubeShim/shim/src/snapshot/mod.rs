@@ -5,7 +5,7 @@
 use crate::common::utils::Utils;
 use crate::common::utils::VM_PATH;
 use crate::common::CResult;
-use crate::hypervisor::config::VmConfig;
+use crate::hypervisor::config::{add_x86_64_cmdlines, VmConfig};
 use crate::hypervisor::snapshot::{self, SnapshotInfo};
 use crate::sandbox::config::{Fs, VmResource, SHARE_CACHE_NEVER};
 use crate::sandbox::disk::Disk;
@@ -272,10 +272,12 @@ impl Snapshot {
 
             //don't disable highres in eks, temporarily use tap to identify this situation
             vm_config.add_cmdline("highres=off".to_string());
-            vm_config.add_cmdline("clocksource=kvm-clock".to_string());
+            add_x86_64_cmdlines(&mut vm_config.cmdlines, &["clocksource=kvm-clock"]);
         } else {
-            vm_config.add_cmdline("clocksource=tsc".to_string());
-            vm_config.add_cmdline("tsc=reliable".to_string());
+            add_x86_64_cmdlines(
+                &mut vm_config.cmdlines,
+                &["clocksource=tsc", "tsc=reliable"],
+            );
         }
 
         let sharefs_ptr = FilePtr::new(FS_SHARE_DIR)?;

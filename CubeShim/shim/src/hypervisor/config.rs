@@ -34,6 +34,13 @@ pub const VIRTIO_FS_TAG: &str = "cubeShared";
 pub const VIRTIO_FS_ID: &str = "cube-fs";
 const KI_B: u64 = 1 << 10;
 const MI_B: u64 = KI_B << 10;
+
+pub(crate) fn add_x86_64_cmdlines(params: &mut Vec<String>, cmdlines: &[&str]) {
+    if cfg!(target_arch = "x86_64") {
+        params.extend(cmdlines.iter().map(|param| (*param).to_string()));
+    }
+}
+
 #[derive(Clone)]
 pub struct HypConfig {
     pub debug: bool,
@@ -99,9 +106,8 @@ impl VmConfig {
             "rootfstype=ext4".to_string(),
             "panic=1".to_string(),
         ];
-        #[cfg(target_arch = "x86_64")]
-        params.extend(["no_timer_check".to_string(), "noreplace-smp".to_string()]);
-        params.extend(["printk.devkmsg=on".to_string()]);
+        add_x86_64_cmdlines(&mut params, &["no_timer_check", "noreplace-smp"]);
+        params.push("printk.devkmsg=on".to_string());
         #[cfg(target_arch = "aarch64")]
         params.push("console=ttyAMA0,115200".to_string());
         #[cfg(not(target_arch = "aarch64"))]
@@ -111,7 +117,9 @@ impl VmConfig {
             "audit=0".to_string(),
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
-            "earlyprintk=ttyS0".to_string(),
+        ]);
+        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0"]);
+        params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
             "mitigations=off".to_string(),
@@ -479,7 +487,7 @@ mod tests {
     use crate::common::utils::Utils;
     use crate::{
         common::utils::DISK_DEVICE_ID_PRE,
-        hypervisor::config::{VmConfig, DEFAULT_AGENT_PATH, IMAGE_PATH},
+        hypervisor::config::{add_x86_64_cmdlines, VmConfig, DEFAULT_AGENT_PATH, IMAGE_PATH},
         sandbox::disk::Disk,
         sandbox::pmem::{HYP_AGENT_ID, HYP_OS_IMAGE_ID},
     };
@@ -506,9 +514,8 @@ mod tests {
             "rootfstype=ext4".to_string(),
             "panic=1".to_string(),
         ];
-        #[cfg(target_arch = "x86_64")]
-        params.extend(["no_timer_check".to_string(), "noreplace-smp".to_string()]);
-        params.extend(["printk.devkmsg=on".to_string()]);
+        add_x86_64_cmdlines(&mut params, &["no_timer_check", "noreplace-smp"]);
+        params.push("printk.devkmsg=on".to_string());
         #[cfg(target_arch = "aarch64")]
         params.push("console=ttyAMA0,115200".to_string());
         #[cfg(not(target_arch = "aarch64"))]
@@ -518,12 +525,48 @@ mod tests {
             "audit=0".to_string(),
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
-            "earlyprintk=ttyS0".to_string(),
+        ]);
+        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0"]);
+        params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
             "mitigations=off".to_string(),
         ]);
         assert_eq!(config.cmdlines, params);
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert!(config
+                .cmdlines
+                .contains(&"console=ttyAMA0,115200".to_string()));
+            assert!(!config.cmdlines.contains(&"earlyprintk=ttyS0".to_string()));
+        }
+    }
+
+    #[test]
+    fn x86_64_cmdlines_match_target_architecture() {
+        let mut params = Vec::new();
+        add_x86_64_cmdlines(
+            &mut params,
+            &[
+                "clocksource=kvm-clock",
+                "clocksource=tsc",
+                "tsc=reliable",
+                "earlyprintk=ttyS0",
+            ],
+        );
+
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            params,
+            [
+                "clocksource=kvm-clock",
+                "clocksource=tsc",
+                "tsc=reliable",
+                "earlyprintk=ttyS0",
+            ]
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        assert!(params.is_empty());
     }
 
     #[test]
