@@ -142,6 +142,17 @@ macro_rules! is_allowed {
     };
 }
 
+#[derive(Debug)]
+struct StaleAppSnapshotError(String);
+
+impl fmt::Display for StaleAppSnapshotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stale app snapshot: {}", self.0)
+    }
+}
+
+impl std::error::Error for StaleAppSnapshotError {}
+
 #[derive(Clone, Debug)]
 pub struct AgentService {
     sandbox: Arc<Mutex<Sandbox>>,
@@ -186,22 +197,28 @@ impl AgentService {
                 );
             }
 
-            let pid = {
+            let mount_namespace = {
                 let sandbox = self.sandbox.clone();
                 let mut s: tokio::sync::MutexGuard<'_, Sandbox> = sandbox.lock().await;
                 let process = s.find_container_process(id, &"")?;
+                let mount_namespace = process.open_restored_mount_namespace().map_err(|e| {
+                    StaleAppSnapshotError(format!(
+                        "restored init process identity is invalid: container {}, pid {}: {}",
+                        id, process.pid, e
+                    ))
+                })?;
 
                 if let Some(io) = proc_io {
                     info!(sl!(), "reconnecting passfd for restored container {}", id);
                     process.reconnect_passfd(io).await?;
                 }
 
-                process.pid
+                mount_namespace
             };
 
-            debug!(sl!(), "container pid:{}", pid);
+            debug!(sl!(), "restored container mount namespace validated");
             start_exec_process(
-                pid,
+                mount_namespace,
                 anno.get(ANNO_PROPAGATION_EXEC_MNTS),
                 anno.get(ANNO_PROPAGATION_CONTAINER_UMNTS),
             )
@@ -796,6 +813,9 @@ impl protocols::agent_ttrpc::AgentService for AgentService {
         trace_rpc_call!(ctx, "create_container", req);
         is_allowed!(req);
         match self.do_create_container(req).await {
+            Err(e) if e.downcast_ref::<StaleAppSnapshotError>().is_some() => {
+                Err(ttrpc_error!(ttrpc::Code::FAILED_PRECONDITION, e))
+            }
             Err(e) => Err(ttrpc_error!(ttrpc::Code::INTERNAL, e)),
             Ok(_) => Ok(Empty::new()),
         }

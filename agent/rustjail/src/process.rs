@@ -4,7 +4,8 @@
 //
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::result;
@@ -67,6 +68,44 @@ pub enum StreamType {
 type Reader = Arc<Mutex<ReadHalf<PipeStream>>>;
 type Writer = Arc<Mutex<WriteHalf<PipeStream>>>;
 
+struct ProcessIdentity {
+    state: char,
+    start_time_ticks: u64,
+    mount_ns_dev: u64,
+    mount_ns_ino: u64,
+}
+
+fn process_identity(pid: pid_t) -> result::Result<ProcessIdentity, String> {
+    let stat_path = format!("/proc/{}/stat", pid);
+    let stat =
+        fs::read_to_string(&stat_path).map_err(|e| format!("read {} failed: {}", stat_path, e))?;
+    let comm_end = stat
+        .rfind(')')
+        .ok_or_else(|| format!("parse {} failed: missing comm terminator", stat_path))?;
+    let fields: Vec<&str> = stat[comm_end + 1..].split_whitespace().collect();
+    // The suffix starts at field 3 (state), so field 22 (starttime) is index 19.
+    let state = fields
+        .first()
+        .and_then(|value| value.chars().next())
+        .ok_or_else(|| format!("parse {} failed: missing process state", stat_path))?;
+    let start_time_ticks = fields
+        .get(19)
+        .ok_or_else(|| format!("parse {} failed: missing start time", stat_path))?
+        .parse::<u64>()
+        .map_err(|e| format!("parse {} start time failed: {}", stat_path, e))?;
+
+    let namespace_path = format!("/proc/{}/ns/mnt", pid);
+    let metadata = fs::metadata(&namespace_path)
+        .map_err(|e| format!("open {} failed: {}", namespace_path, e))?;
+
+    Ok(ProcessIdentity {
+        state,
+        start_time_ticks,
+        mount_ns_dev: metadata.dev(),
+        mount_ns_ino: metadata.ino(),
+    })
+}
+
 #[derive(Debug)]
 pub struct Process {
     pub container_id: String,
@@ -93,6 +132,9 @@ pub struct Process {
     // pid of the init/exec process. since we have no command
     // struct to store pid, we must store pid here.
     pub pid: pid_t,
+    pub start_time_ticks: u64,
+    pub mount_ns_dev: u64,
+    pub mount_ns_ino: u64,
 
     pub exit_code: i32,
     pub exited: bool,
@@ -171,6 +213,55 @@ fn send_fd(socket_path: &str, fd: RawFd) -> result::Result<(), String> {
 }
 
 impl Process {
+    pub fn capture_identity(&mut self) -> result::Result<(), String> {
+        let identity = process_identity(self.pid)?;
+        self.start_time_ticks = identity.start_time_ticks;
+        self.mount_ns_dev = identity.mount_ns_dev;
+        self.mount_ns_ino = identity.mount_ns_ino;
+        Ok(())
+    }
+
+    pub fn open_restored_mount_namespace(&self) -> result::Result<File, String> {
+        self.validate_restored_identity()?;
+
+        let namespace_path = format!("/proc/{}/ns/mnt", self.pid);
+        let namespace = File::open(&namespace_path)
+            .map_err(|e| format!("open {} failed: {}", namespace_path, e))?;
+        let metadata = namespace
+            .metadata()
+            .map_err(|e| format!("stat {} failed: {}", namespace_path, e))?;
+        if metadata.dev() != self.mount_ns_dev || metadata.ino() != self.mount_ns_ino {
+            return Err("mount namespace identity changed while opening it".to_string());
+        }
+
+        Ok(namespace)
+    }
+
+    pub fn validate_restored_identity(&self) -> result::Result<(), String> {
+        if self.pid <= 0 {
+            return Err(format!("invalid pid {}", self.pid));
+        }
+        if self.exited {
+            return Err("process is marked exited".to_string());
+        }
+        if self.start_time_ticks == 0 || self.mount_ns_ino == 0 {
+            return Err("snapshot is missing process identity".to_string());
+        }
+
+        let identity = process_identity(self.pid)?;
+        if identity.state == 'Z' || identity.state == 'X' || identity.state == 'x' {
+            return Err(format!("process is not live (state {})", identity.state));
+        }
+        if identity.start_time_ticks != self.start_time_ticks {
+            return Err("process start time changed".to_string());
+        }
+        if identity.mount_ns_dev != self.mount_ns_dev || identity.mount_ns_ino != self.mount_ns_ino
+        {
+            return Err("mount namespace identity changed".to_string());
+        }
+        Ok(())
+    }
+
     pub fn new(
         logger: &Logger,
         ocip: &OCIProcess,
@@ -200,6 +291,9 @@ impl Process {
             parent_stderr: None,
             init,
             pid: -1,
+            start_time_ticks: 0,
+            mount_ns_dev: 0,
+            mount_ns_ino: 0,
             exit_code: 0,
             exited: false,
             exit_watchers: Vec::new(),
@@ -762,6 +856,40 @@ mod tests {
             assert_eq!(process.stdout.unwrap(), std::io::stdout().as_raw_fd());
             assert_eq!(process.stderr.unwrap(), std::io::stderr().as_raw_fd());
         }
+    }
+
+    #[test]
+    fn test_restored_process_identity() {
+        let logger = Logger::root(slog::Discard, o!("source" => "unit-test"));
+        let mut process =
+            Process::new(&logger, &OCIProcess::default(), "identity", true, 32).unwrap();
+
+        assert!(process.validate_restored_identity().is_err());
+
+        process.pid = std::process::id() as pid_t;
+        process.capture_identity().unwrap();
+        assert!(process.validate_restored_identity().is_ok());
+        assert!(process.open_restored_mount_namespace().is_ok());
+
+        process.start_time_ticks += 1;
+        assert!(process
+            .validate_restored_identity()
+            .unwrap_err()
+            .contains("start time changed"));
+
+        process.start_time_ticks -= 1;
+        process.mount_ns_ino += 1;
+        assert!(process
+            .validate_restored_identity()
+            .unwrap_err()
+            .contains("mount namespace identity changed"));
+
+        process.mount_ns_ino -= 1;
+        process.exited = true;
+        assert!(process
+            .validate_restored_identity()
+            .unwrap_err()
+            .contains("marked exited"));
     }
 
     #[test]

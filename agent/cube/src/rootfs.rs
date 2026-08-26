@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use libc::pid_t;
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
@@ -10,12 +9,16 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::result::Result;
 use std::string::String;
-use std::{fs, fs::File, os::fd::AsRawFd};
+use std::{
+    fs,
+    fs::File,
+    os::fd::{AsRawFd, FromRawFd},
+};
 pub const ANNOTATION_K_ROOTFS_INFO: &str = "cube.rootfs.info";
 pub const ANNO_CONTAINER_CUSTOM_FILE: &str = "cube.container.custom.file";
 pub const ANNO_PROPAGATION_EXEC_MNTS: &str = "cube.propagation.exec.mounts";
 pub const ANNO_PROPAGATION_CONTAINER_UMNTS: &str = "cube.propagation.container.umounts";
-pub const ENV_CONTAINER_PID: &str = "container.pid";
+pub const ENV_CONTAINER_MOUNT_NS_FD: &str = "container.mount_ns_fd";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OverlayInfo {
@@ -74,19 +77,13 @@ pub struct PropagationContainerUmount {
     pub container_dir: String,
 }
 
-pub fn exit_proc_failed(msg: String) {
+pub fn exit_proc_failed(msg: String) -> ! {
     eprintln!("{}", msg);
     std::process::exit(1);
 }
 
 pub fn do_exec_mount() {
     println!("exec process start");
-    let ev_pid = std::env::var(ENV_CONTAINER_PID);
-    if ev_pid.is_err() {
-        exit_proc_failed(format!("Not found env: {}", ENV_CONTAINER_PID));
-    }
-    let pid: pid_t = ev_pid.unwrap().parse().expect("invalid pid");
-
     let exec_mnts = {
         match std::env::var(ANNO_PROPAGATION_EXEC_MNTS) {
             Ok(val) => {
@@ -123,12 +120,16 @@ pub fn do_exec_mount() {
         }
     };
 
-    let mnt_ns_path = format!("/proc/{}/ns/mnt", pid);
-    let file = File::open(mnt_ns_path.clone());
-    if let Err(e) = file.as_ref() {
-        exit_proc_failed(format!("open {} failed:{}", mnt_ns_path, e));
-    }
-    let ret = unsafe { libc::setns(file.unwrap().as_raw_fd(), libc::CLONE_NEWNS) };
+    let value = std::env::var(ENV_CONTAINER_MOUNT_NS_FD).unwrap_or_else(|_| {
+        exit_proc_failed(format!("Not found env: {}", ENV_CONTAINER_MOUNT_NS_FD))
+    });
+    let fd = value.parse::<i32>().unwrap_or_else(|e| {
+        exit_proc_failed(format!("invalid mount namespace fd {}: {}", value, e))
+    });
+    // SAFETY: the parent passes an inherited descriptor dedicated to this
+    // short-lived helper process.
+    let namespace = unsafe { File::from_raw_fd(fd) };
+    let ret = unsafe { libc::setns(namespace.as_raw_fd(), libc::CLONE_NEWNS) };
     if ret < 0 {
         exit_proc_failed(format!("setns failed:{}", std::io::Error::last_os_error()));
     }

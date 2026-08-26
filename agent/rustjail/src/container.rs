@@ -7,11 +7,12 @@ use std::clone::Clone;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::fs;
+use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::RawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use cgroups::freezer::FreezerState;
 use cube::rootfs::{
-    ANNO_PROPAGATION_CONTAINER_UMNTS, ANNO_PROPAGATION_EXEC_MNTS, ENV_CONTAINER_PID,
+    ANNO_PROPAGATION_CONTAINER_UMNTS, ANNO_PROPAGATION_EXEC_MNTS, ENV_CONTAINER_MOUNT_NS_FD,
 };
 use libc::pid_t;
 use nix::errno::Errno;
@@ -1049,6 +1050,8 @@ impl BaseContainer for LinuxContainer {
         if p.init {
             let spec = self.config.spec.as_mut().unwrap();
             update_namespaces(&self.logger, spec, p.pid)?;
+            p.capture_identity()
+                .map_err(|e| anyhow!("failed to capture init process identity: {}", e))?;
         }
         let init = p.init;
         p.setup_passfd_io().await;
@@ -1685,15 +1688,32 @@ fn valid_env(e: &str) -> Option<(&str, &str)> {
 }
 
 pub async fn start_exec_process(
-    pid: pid_t,
+    mount_namespace: File,
     exec_mnts: Option<&String>,
     propa_umnts: Option<&String>,
 ) -> Result<(), String> {
     println!("exec a child process");
     let exec_path = std::env::current_exe().map_err(|e| format!("get exe path failed:{}", e))?;
     let mut cmd = std::process::Command::new(exec_path);
+    let mount_namespace_fd = mount_namespace.as_raw_fd();
+    // Keep the parent's namespace fd CLOEXEC. Only the forked helper clears
+    // that flag before exec, so unrelated concurrent children cannot inherit
+    // this cross-container namespace capability.
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(mount_namespace_fd, libc::F_GETFD);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(mount_namespace_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     cmd.arg("exec")
-        .env(ENV_CONTAINER_PID, format!("{}", pid))
+        .env(ENV_CONTAINER_MOUNT_NS_FD, format!("{}", mount_namespace_fd))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     if let Some(mnt) = exec_mnts {
