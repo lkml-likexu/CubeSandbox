@@ -35,6 +35,7 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) goarch=amd64 ;; \
       arm64) goarch=arm64 ;; \
+      riscv64) goarch=riscv64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     GOOS=linux GOARCH="${goarch}" go build -o /out/cubemaster \
@@ -54,6 +55,7 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) goarch=amd64 ;; \
       arm64) goarch=arm64 ;; \
+      riscv64) goarch=riscv64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     cd /volume-s3; \

@@ -47,6 +47,7 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) goarch=amd64 ;; \
       arm64) goarch=arm64 ;; \
+      riscv64) goarch=riscv64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /out/bin; \

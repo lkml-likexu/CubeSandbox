@@ -8,7 +8,7 @@
 #   docker run -e CUBE_MASTER_ADDR=http://cubemaster:8089 -p 3000:3000 cube-api:v1.0
 
 # ── Build stage ────────────────────────────────────────────────────────────────
-# TARGETARCH is auto-populated by BuildKit/buildx (amd64 | arm64). Falls back to
+# TARGETARCH is auto-populated by BuildKit/buildx (amd64 | arm64 | riscv64). Falls back to
 # the host arch for a plain `docker build` without buildx.
 FROM rust:1.85-alpine AS builder
 ARG TARGETARCH
@@ -26,6 +26,7 @@ RUN set -eux; \
     case "${arch}" in \
       amd64|x86_64)  rust_target=x86_64-unknown-linux-musl;; \
       arm64|aarch64) rust_target=aarch64-unknown-linux-musl;; \
+      riscv64)       rust_target=riscv64gc-unknown-linux-musl;; \
       *) echo "unsupported TARGETARCH: ${arch}" >&2; exit 1;; \
     esac; \
     echo "${rust_target}" > /etc/rust-target; \
