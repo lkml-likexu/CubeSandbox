@@ -84,7 +84,7 @@ const REFLINK_BLOCK_SIZE: u32 = 512;
 ///
 /// Same constant is used by `bin/cubecow_snap_vs_reflink.rs`; we keep a
 /// local copy here to avoid a binary-↔-library dependency cycle.
-const FICLONE: libc::c_ulong = 0x40049409;
+const FICLONE: libc::Ioctl = 0x40049409;
 
 // ---------------------------------------------------------------------------
 // Internal types

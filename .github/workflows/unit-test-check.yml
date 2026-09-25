@@ -12,6 +12,7 @@ on:
       - 'CubeMaster/**'
       - 'CubeTemplateCenter/**'
       - 'CubeShim/**'
+      - 'third_party/containerd-shim/**'
       - 'CubeNet/**'
       - 'pkgs/CubeLog/**'
       - 'pkgs/proto/**'
@@ -37,6 +38,7 @@ on:
       - 'CubeMaster/**'
       - 'CubeTemplateCenter/**'
       - 'CubeShim/**'
+      - 'third_party/containerd-shim/**'
       - 'CubeNet/**'
       - 'pkgs/CubeLog/**'
       - 'pkgs/proto/**'
@@ -237,7 +239,7 @@ jobs:
                 CubeTemplateCenter/*)
                   add_component "CubeTemplateCenter"
                   ;;
-                CubeShim/*)
+                CubeShim/*|third_party/containerd-shim/*)
                   add_component "CubeShim"
                   ;;
                 CubeNet/cubevs/*)

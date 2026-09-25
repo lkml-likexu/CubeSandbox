@@ -20,6 +20,7 @@
 
 # Shim: containerd shim
 /CubeShim/ @ls-ggg
+/third_party/containerd-shim/ @ls-ggg
 
 # agent: in-guest runtime
 /agent/ @ls-ggg

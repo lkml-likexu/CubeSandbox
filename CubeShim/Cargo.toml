@@ -6,6 +6,9 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+containerd-shim = { path = "../third_party/containerd-shim" }
+
 [profile.release]
 lto = true
 codegen-units = 1
