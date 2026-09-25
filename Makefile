@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Tencent. All rights reserved.
 
 BUILDER_IMAGE ?= cube-sandbox-builder:ubuntu2004
+RISCV64_BUILDER_IMAGE ?= cube-sandbox-builder:riscv64-cross
 BUILDER_DOCKERFILE ?= docker/Dockerfile.builder
 BUILDER_HOME ?= $(HOME)/.cache/cube-sandbox-builder
 BUILDER_CONTAINER_HOME ?= /home/builder
@@ -34,7 +35,7 @@ TARGET_ARCH ?= $(shell uname -m | sed 's/^arm64$$/aarch64/')
 # `make kernel KERNEL_SRC=/path/to/linux` builds a vmlinux from the in-tree
 # kernel config (configs/kernel-oc9.<arch>.config) inside the unified builder
 # image.
-# Supports native builds (x86_64 or aarch64) and cross builds (x86_64 <-> aarch64).
+# Supports native and cross builds for x86_64, aarch64, and riscv64.
 # The kernel is built out-of-tree (O=) so KERNEL_SRC is left pristine. Override
 # KERNEL_TARGET_ARCH to cross-compile for an architecture other than the host;
 # the matching CROSS_COMPILE prefix is selected automatically (override with
@@ -92,6 +93,21 @@ BINARIES := \
 	shim \
 	#
 
+RISCV64_BINARIES := \
+	agent-riscv64 \
+	cube-init-riscv64 \
+	cube-volume-s3-riscv64 \
+	cube-lifecycle-manager-riscv64 \
+	cubeapi-riscv64 \
+	cubecow-riscv64 \
+	cubelet-riscv64 \
+	cubemaster-riscv64 \
+	cubetemplatecenter-riscv64 \
+	cubeops-riscv64 \
+	cubevsmapdump-riscv64 \
+	shim-riscv64 \
+	#
+
 # All versioned binaries should consume the canonical CUBE_VERSION /
 # CUBE_COMMIT / CUBE_BUILD_TIME triplet. Keep the root Makefile's ad-hoc
 # builder path aligned with the one-click release path so `_output/bin/* --version`
@@ -129,19 +145,25 @@ else ifneq ($(MIRROR),)
 $(warning MIRROR='$(MIRROR)' is not recognized by builder-image; expected 'cn' or empty -- building against upstream ubuntu and apt.llvm.org sources)
 endif
 
-.PHONY: all
+.PHONY: all all-riscv64
 all: $(BINARIES)
+
+$(RISCV64_BINARIES): export BUILDER_IMAGE := $(RISCV64_BUILDER_IMAGE)
+all-riscv64: export BUILDER_IMAGE := $(RISCV64_BUILDER_IMAGE)
+all-riscv64: $(RISCV64_BINARIES)
 
 .PHONY: help
 help:
 	@printf "Targets:\n"
 	@printf "  builder-image  Build unified builder image (%s)\n" "$(BUILDER_IMAGE)"
+	@printf "  riscv64-builder-image Build RISC-V cross-builder image (%s)\n" "$(RISCV64_BUILDER_IMAGE)"
 	@printf "  builder-shell  Start interactive shell with persisted HOME (%s)\n" "$(BUILDER_HOME)"
 	@printf "  builder-run    Run command inside builder image (BUILDER_CMD=...)\n"
 	@printf "  cubemaster    Build cubemaster and cubemastercli in Docker\n"
 	@printf "  cubetemplatecenter Build templatecenter in Docker\n"
 	@printf "  cubelet       Build cubelet and cubecli in Docker\n"
 	@printf "  cubevsmapdump Build CubeVS eBPF business map dump tool in Docker\n"
+	@printf "  *-riscv64    Cross-compile the corresponding binary for linux/riscv64\n"
 	@printf "  cubecow-sdk   Build cubecow static library for Cubelet\n"
 	@printf "  cube-s3lvol   Build CubeS3lvol (s3lvol) release in Docker\n"
 	@printf "  cube-s3lvol-test Run CubeS3lvol offline integration tests in Docker\n"
@@ -177,8 +199,9 @@ help:
 	@printf "  cube-lifecycle-manager-test Run cube-lifecycle-manager unit tests in Docker\n"
 	@printf "  agent-test    Run cube-agent unit tests in Docker\n"
 	@printf "  hypervisor-test Run hypervisor --lib --bins unit tests in Docker\n"
-	@printf "  guest-kernel  Build guest kernel vmlinux/Image (KERNEL_SRC=...; native or cross x86_64<->aarch64)\n"
+	@printf "  guest-kernel  Build guest kernel vmlinux/Image (KERNEL_SRC=...; x86_64, aarch64, or riscv64)\n"
 	@printf "  all           Build all default binaries in Docker\n"
+	@printf "  all-riscv64   Cross-compile all RISC-V-ready binaries in Docker\n"
 	@printf "  manual-release Build binaries and package manual update tarball\n"
 	@printf "  clean         Remove local Go/Rust build artifacts (not global caches)\n"
 	@printf "  clean-go-build-dirs Remove Go component build/bin dirs and _output/{bin,cube-agent}\n"
@@ -197,13 +220,16 @@ help:
 	@printf "  - binary outputs are written to %s\n" "$(OUTPUT_DIR)"
 	@printf "  - cube-agent.ext4 outputs are written to %s\n" "$(AGENT_EXT4_OUTPUT_DIR)"
 	@printf "  - release outputs are written to %s\n" "$(RELEASE_DIR)"
-	@printf "  - Run 'make builder-image' first if image %s is missing\n" "$(BUILDER_IMAGE)"
+	@printf "  - Native targets use %s; all-riscv64 manages %s automatically\n" "$(BUILDER_IMAGE)" "$(RISCV64_BUILDER_IMAGE)"
 
-.PHONY: builder-image
+.PHONY: builder-image riscv64-builder-image
 # Context is the repo root (Dockerfile COPYs CubeS3lvol/setup_dep.sh + patches/).
 # Rebuilds when the image's s3lvol SPDK/AWS stamps no longer match the current
 # pin + patches (toolchain layers stay cached). BUILDER_FORCE_REBUILD=1 forces it.
 builder-image:
+ifeq ($(SKIP_BUILDER_IMAGE_CHECK),1)
+	@docker image inspect $(BUILDER_IMAGE) >/dev/null 2>&1 || { echo "ERROR: builder image $(BUILDER_IMAGE) not found"; exit 1; }
+else
 	@expected_spdk="$$($(CUBES3LVOL_DIR)/setup_dep.sh --print-stamp spdk)"; \
 	expected_aws="$$($(CUBES3LVOL_DIR)/setup_dep.sh --print-stamp aws)"; \
 	need_build=0; \
@@ -228,6 +254,21 @@ builder-image:
 			--build-arg S3LVOL_AWS_STAMP="$$expected_aws" \
 			-t $(BUILDER_IMAGE) -f $(BUILDER_DOCKERFILE) .; \
 	fi
+endif
+
+riscv64-builder-image:
+ifeq ($(SKIP_BUILDER_IMAGE_CHECK),1)
+	@docker image inspect $(BUILDER_IMAGE) >/dev/null 2>&1 || { echo "ERROR: RISC-V builder image $(BUILDER_IMAGE) not found"; exit 1; }
+else
+	@if [ -z "$(BUILDER_FORCE_REBUILD)" ] && docker image inspect $(BUILDER_IMAGE) >/dev/null 2>&1; then \
+		printf 'RISC-V builder image %s already present, skipping build (set BUILDER_FORCE_REBUILD=1 to rebuild)\n' "$(BUILDER_IMAGE)"; \
+	else \
+		docker build $(if $(filter-out 0,$(BUILDER_FORCE_REBUILD)),--no-cache) $(BUILDER_BUILD_ARGS) \
+			--build-arg ENABLE_RISCV64_CROSS=1 \
+			--build-arg BUILD_S3LVOL_DEPS=0 \
+			-t $(BUILDER_IMAGE) -f $(BUILDER_DOCKERFILE) .; \
+	fi
+endif
 
 .PHONY: prepare-builder-home
 prepare-builder-home:
@@ -284,7 +325,7 @@ endif
 		$(BUILDER_IMAGE) \
 		bash -lc 'mkdir -p "$$HOME" "$$CARGO_HOME" "$$GOPATH" "$$HOME/.cache" "$$HOME/.config" && exec bash -lc "$$BUILDER_CMD"'
 
-.PHONY: cubecow-sdk
+.PHONY: cubecow-sdk cubecow-riscv64
 cubecow-sdk:
 ifeq ($(IN_CUBE_SANDBOX_BUILDER),1)
 	@mkdir -p "$(CUBELET_COW_THIRD_PARTY_DIR)/lib" "$(CUBELET_COW_THIRD_PARTY_DIR)/include"
@@ -295,6 +336,10 @@ else
 	$(MAKE) builder-image
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace && IN_CUBE_SANDBOX_BUILDER=1 make cubecow-sdk'
 endif
+
+cubecow-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/cubecow && rustup target add riscv64gc-unknown-linux-musl --toolchain 1.89 && CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc cargo build --release -p cubecow --target riscv64gc-unknown-linux-musl && install -m 0644 target/riscv64gc-unknown-linux-musl/release/libcubecow.a /workspace/_output/bin/libcubecow-riscv64.a'
 
 # cube-s3lvol: build the CubeS3lvol release in Docker, mirroring track_s3lvol.
 # setup_dep.sh reuses /opt/s3lvol-* from the builder when stamps match.
@@ -381,52 +426,85 @@ cubecow-smoke: builder-image
 cubecow-test-native: builder-image
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace && IN_CUBE_SANDBOX_BUILDER=1 make cubecow-sdk && cd /workspace/cubecow && cargo test -p cubecow --lib && cd /workspace/Cubelet && go mod download && go test -a ./pkg/cubecow -run Test -count=1'
 
-.PHONY: cubemaster
+.PHONY: cubemaster cubemaster-riscv64
 cubemaster: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeMaster && CGO_ENABLED=0 make build && mkdir -p /workspace/_output/bin && cp build/cubemaster build/cubemastercli /workspace/_output/bin/'
 
+cubemaster-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeMaster && GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 make build && install -m 0755 build/cubemaster /workspace/_output/bin/cubemaster-riscv64 && install -m 0755 build/cubemastercli /workspace/_output/bin/cubemastercli-riscv64'
+
 # CubeTemplateCenter is a separate module whose go.mod replaces CubeMaster,
 # CubeDB, Cubelet and cubelog with local paths, so it builds inside the same
 # builder image as every other Go component.
-.PHONY: cubetemplatecenter
+.PHONY: cubetemplatecenter cubetemplatecenter-riscv64
 cubetemplatecenter: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeTemplateCenter && go mod download && make build && mkdir -p /workspace/_output/bin && cp build/templatecenter /workspace/_output/bin/'
 
-.PHONY: cubelet
+cubetemplatecenter-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeTemplateCenter && GOOS=linux GOARCH=riscv64 make build && install -m 0755 build/templatecenter /workspace/_output/bin/templatecenter-riscv64'
+
+.PHONY: cubelet cubelet-riscv64
 cubelet: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	# Cubelet embeds the network runtime and links CubeNet/cubevs; bpf2go outputs
 	# are gitignored, so generate them before compiling cubelet.
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace && IN_CUBE_SANDBOX_BUILDER=1 make cubecow-sdk && cd /workspace/CubeNet/cubevs && make gen && cd /workspace/Cubelet && go mod download && make proto && make build && cp build/cubelet build/cubecli /workspace/_output/bin/'
 
-.PHONY: cubevsmapdump
+cubelet-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='set -eu; cd /workspace/cubecow; rustup target add riscv64gc-unknown-linux-musl --toolchain 1.89; CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc cargo build --release -p cubecow --target riscv64gc-unknown-linux-musl; mkdir -p /workspace/Cubelet/third_party/cubecow/lib /workspace/Cubelet/third_party/cubecow/include; install -m 0644 target/riscv64gc-unknown-linux-musl/release/libcubecow.a /workspace/Cubelet/third_party/cubecow/lib/libcubecow.a; install -m 0644 include/cubecow.h /workspace/Cubelet/third_party/cubecow/include/cubecow.h; cd /workspace/CubeNet/cubevs; BPF_TARGET_ARCH=riscv64 make gen; cd /workspace/Cubelet; make proto; CC=riscv64-linux-musl-gcc CGO_ENABLED=1 GOOS=linux GOARCH=riscv64 make build; install -m 0755 build/cubelet /workspace/_output/bin/cubelet-riscv64; install -m 0755 build/cubecli /workspace/_output/bin/cubecli-riscv64'
+
+.PHONY: cubevsmapdump cubevsmapdump-riscv64
 cubevsmapdump: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/CubeNet/cubevs && make gen && go build -o /workspace/_output/bin/cubevsmapdump ./cmd/cubevsmapdump'
 
+cubevsmapdump-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeNet/cubevs && BPF_TARGET_ARCH=riscv64 make gen && CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -o /workspace/_output/bin/cubevsmapdump-riscv64 ./cmd/cubevsmapdump'
+
 # S3-compatible Volume plugin. CubeMaster/Cubelet fork it once per hook, so it
 # ships as a standalone static binary next to the component binaries.
-.PHONY: cube-volume-s3
+.PHONY: cube-volume-s3 cube-volume-s3-riscv64
 cube-volume-s3: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD="mkdir -p /workspace/_output/bin && cd /workspace/examples/volume/s3 && go mod download && CGO_ENABLED=0 GOOS=linux GOARCH=$$(go env GOARCH) go build -trimpath -ldflags '-s -w' -o /workspace/_output/bin/cube-volume-s3 ./cmd/cube-volume-s3"
+
+cube-volume-s3-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD="cd /workspace/examples/volume/s3 && CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -trimpath -ldflags '-s -w' -o /workspace/_output/bin/cube-volume-s3-riscv64 ./cmd/cube-volume-s3"
 
 .PHONY: cube-proxy-sidecar
 cube-proxy-sidecar: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD="mkdir -p /workspace/_output/bin && cd /workspace/CubeProxy/sidecar && go mod download && CGO_ENABLED=0 GOOS=linux GOARCH=$$(go env GOARCH) go build -trimpath -tags 'netgo osusergo' -ldflags '-s -w' -o /workspace/_output/bin/cube-proxy-sidecar ./cmd/sidecar"
 
-.PHONY: agent
+.PHONY: cube-lifecycle-manager-riscv64
+cube-lifecycle-manager-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/cube-lifecycle-manager && CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -trimpath -o /workspace/_output/bin/cube-lifecycle-manager-riscv64 ./cmd/cube-lifecycle-manager'
+
+.PHONY: agent agent-riscv64
 agent: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/agent && make -j1 &&  make BINDIR=/workspace/_output/bin install'
 
-.PHONY: cube-init guest-init
+agent-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/agent && TRIPLE=riscv64gc-unknown-linux-musl LIBSECCOMP_LIB_PATH=/usr/local/riscv64-linux-musl/libseccomp/lib make -j1 && install -m 0755 target/riscv64gc-unknown-linux-musl/release/cube-agent /workspace/_output/bin/cube-agent-riscv64'
+
+.PHONY: cube-init guest-init cube-init-riscv64
 cube-init guest-init: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/guest-init && make -j1 && make BINDIR=/workspace/_output/bin install'
+
+cube-init-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/guest-init && TRIPLE=riscv64gc-unknown-linux-musl make -j1 && install -m 0755 target/riscv64gc-unknown-linux-musl/release/cube-init /workspace/_output/bin/cube-init-riscv64'
 
 # Independent cube-agent.ext4 plane file for virtio-pmem1 (agent-independent pmem).
 # Builds the musl-static cube-agent inside the builder, then packages
@@ -449,18 +527,26 @@ agent-ext4 cube-agent-ext4: builder-image
 .PHONY: pmem-assets
 pmem-assets: cube-init agent-ext4
 
-.PHONY: cubeapi
+.PHONY: cubeapi cubeapi-riscv64
 cubeapi: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/CubeAPI && CC_$(TARGET_ARCH)_unknown_linux_musl=musl-gcc cargo build --release --locked --target $(TARGET_ARCH)-unknown-linux-musl && install -m 0755 /workspace/CubeAPI/target/$(TARGET_ARCH)-unknown-linux-musl/release/cube-api /workspace/_output/bin/cube-api'
 
+cubeapi-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeAPI && rustup target add riscv64gc-unknown-linux-musl --toolchain 1.85 && CC_riscv64gc_unknown_linux_musl=riscv64-linux-musl-gcc CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc cargo build --release --locked --target riscv64gc-unknown-linux-musl && install -m 0755 target/riscv64gc-unknown-linux-musl/release/cube-api /workspace/_output/bin/cube-api-riscv64'
+
 .PHONY: cube-api
 cube-api: cubeapi
 
-.PHONY: cubeops
+.PHONY: cubeops cubeops-riscv64
 cubeops: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/CubeOps && CGO_ENABLED=0 make build && cp bin/cubeops bin/cubeopscli /workspace/_output/bin/'
+
+cubeops-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeOps && CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 make build && install -m 0755 bin/cubeops /workspace/_output/bin/cubeops-riscv64 && install -m 0755 bin/cubeopscli /workspace/_output/bin/cubeopscli-riscv64'
 
 .PHONY: cubeops-test
 cubeops-test: builder-image
@@ -578,12 +664,16 @@ agent-test: builder-image
 hypervisor-test: builder-image
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace/hypervisor && cargo test --features kvm --lib --bins'
 
-.PHONY: shim
+.PHONY: shim shim-riscv64
 shim: builder-image
 	@mkdir -p "$(OUTPUT_DIR)"
 	$(MAKE) builder-run BUILDER_CMD='mkdir -p /workspace/_output/bin && cd /workspace/CubeShim && cargo build --release --locked && install -m 0755 /workspace/CubeShim/target/release/containerd-shim-cube-rs /workspace/_output/bin/containerd-shim-cube-rs && install -m 0755 /workspace/CubeShim/target/release/cube-runtime /workspace/_output/bin/cube-runtime'
 
-# Build a guest kernel image (vmlinux for x86_64, Image for aarch64) from an external kernel source tree.
+shim-riscv64: riscv64-builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run BUILDER_CMD='cd /workspace/CubeShim && rustup target add riscv64gc-unknown-linux-musl --toolchain 1.85 && LIBSECCOMP_LINK_TYPE=static LIBSECCOMP_LIB_PATH=/usr/local/riscv64-linux-musl/libseccomp/lib LIBCAPNG_LINK_TYPE=static LIBCAPNG_LIB_PATH=/usr/local/riscv64-linux-musl/libcap-ng/lib CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc cargo +1.85 build --release --locked --target riscv64gc-unknown-linux-musl && install -m 0755 target/riscv64gc-unknown-linux-musl/release/containerd-shim-cube-rs /workspace/_output/bin/containerd-shim-cube-rs-riscv64 && install -m 0755 target/riscv64gc-unknown-linux-musl/release/cube-runtime /workspace/_output/bin/cube-runtime-riscv64'
+
+# Build a guest kernel image (vmlinux for x86_64, Image for aarch64/riscv64) from an external kernel source tree.
 #   make guest-kernel KERNEL_SRC=/path/to/linux                            # native build for the host arch
 #   make guest-kernel KERNEL_SRC=/path/to/linux KERNEL_TARGET_ARCH=aarch64 # cross build
 # KERNEL_SRC is mounted into the builder at /kernel-src; the config is taken

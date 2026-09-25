@@ -12,6 +12,10 @@ ARG APT_MIRROR_BASE=
 ARG GO_VERSION=1.25.7
 ARG PROTOC_VERSION=28.3
 ARG LIBSECCOMP_VERSION=2.5.5
+ARG LIBCAP_NG_VERSION=0.8.4
+ARG LIBCAP_NG_SHA256=68581d3b38e7553cb6f6ddf7813b1fc99e52856f21421f7b477ce5abd2605a8a
+ARG RISCV64_MUSL_CROSS_URL=https://musl.cc/riscv64-linux-musl-cross.tgz
+ARG RISCV64_MUSL_CROSS_SHA256=db0bc413bd4a93f2012cc74b9ba0c4af29d8bc18b88e9c61998738ccb918604b
 ARG RUST_TOOLCHAIN_DEFAULT=1.89
 ARG RUST_TOOLCHAIN_HYPERVISOR=1.77.2
 ARG RUST_TOOLCHAIN_E2BAPI=1.85
@@ -27,6 +31,8 @@ ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
 # docker/llvm-snapshot.gpg.key so the build does not fetch it from apt.llvm.org.
 ARG LLVM_MIRROR_BASE=
 ARG TARGETARCH
+ARG ENABLE_RISCV64_CROSS=0
+ARG BUILD_S3LVOL_DEPS=auto
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -44,15 +50,18 @@ ENV LANG=C.UTF-8 \
     LIBSECCOMP_LIB_PATH=/usr/local/lib64/libseccomp/lib
 
 RUN set -eux; \
-    TARGETARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    host_arch="$(dpkg --print-architecture)"; \
+    TARGETARCH="${TARGETARCH:-${host_arch}}"; \
     case "${TARGETARCH}" in \
-      amd64) PROTOC_ARCH=x86_64;; \
-      arm64) PROTOC_ARCH=aarch_64;; \
-      *)     PROTOC_ARCH=$(uname -m | sed 's/^aarch64$/aarch_64/');; \
+      amd64) PROTOC_ARCH=x86_64; RUST_ARCH=x86_64;; \
+      arm64) PROTOC_ARCH=aarch_64; RUST_ARCH=aarch64;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1;; \
     esac; \
     { \
       echo "TARGETARCH=${TARGETARCH}"; \
+      echo "HOSTARCH=${host_arch}"; \
       echo "TARGET_UNAME_ARCH=$(uname -m)"; \
+      echo "RUST_ARCH=${RUST_ARCH}"; \
       echo "PROTOC_ARCH=${PROTOC_ARCH}"; \
     } > /etc/buildenv
 
@@ -99,6 +108,7 @@ RUN . /etc/buildenv \
         libaio-dev \
         libcap-dev \
         libcap-ng-dev \
+        libcap-ng0 \
         libcmocka-dev \
         libcunit1-dev \
         libdevmapper-dev \
@@ -154,13 +164,11 @@ RUN . /etc/buildenv \
         gnupg \
         lsb-release \
         software-properties-common \
-    && if [ "${TARGETARCH}" = "amd64" ]; then \
-       apt-get install -y --no-install-recommends gcc-multilib; \
-       apt-get install -y gcc-aarch64-linux-gnu; \
-    else \
-       apt-get install -y --no-install-recommends; \
-       apt-get install -y gcc-x86-64-linux-gnu; \
-    fi \
+    && case "${TARGETARCH}" in \
+       amd64) apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-riscv64-cross ;; \
+       arm64) apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu libc6-dev-riscv64-cross ;; \
+       *) exit 1 ;; \
+    esac \
     && rm -rf /var/lib/apt/lists/*
 
 # Python build-deps for CubeS3lvol's SPDK/DPDK.
@@ -229,9 +237,29 @@ RUN set -eux; \
     && for toolchain in "${RUST_TOOLCHAIN_HYPERVISOR}" "${RUST_TOOLCHAIN_E2BAPI}" "${RUST_TOOLCHAIN_AGENT}"; do \
         rustup toolchain install "${toolchain}" --profile minimal; \
         rustup component add rust-src clippy rustfmt rust-analyzer llvm-tools-preview --toolchain "${toolchain}"; \
-        rustup target add ${TARGET_UNAME_ARCH}-unknown-linux-musl --toolchain "${toolchain}"; \
+        rustup target add ${RUST_ARCH}-unknown-linux-gnu --toolchain "${toolchain}"; \
+        if rustup target list --toolchain "${toolchain}" | grep -q "^${RUST_ARCH}-unknown-linux-musl "; then \
+            rustup target add ${RUST_ARCH}-unknown-linux-musl --toolchain "${toolchain}"; \
+        fi; \
     done; \
+    if [ "${ENABLE_RISCV64_CROSS}" = 1 ] && [ "${RUST_ARCH}" != riscv64gc ]; then \
+        for toolchain in "${RUST_TOOLCHAIN_E2BAPI}" "${RUST_TOOLCHAIN_AGENT}"; do \
+            rustup target add riscv64gc-unknown-linux-gnu --toolchain "${toolchain}"; \
+            rustup target add riscv64gc-unknown-linux-musl --toolchain "${toolchain}"; \
+        done; \
+    fi; \
     rustup default "${RUST_TOOLCHAIN_DEFAULT}"
+
+RUN set -eux; \
+    if [ "${ENABLE_RISCV64_CROSS}" = 1 ]; then \
+        curl -fsSL "${RISCV64_MUSL_CROSS_URL}" -o /tmp/riscv64-linux-musl-cross.tgz; \
+        echo "${RISCV64_MUSL_CROSS_SHA256}  /tmp/riscv64-linux-musl-cross.tgz" | sha256sum -c -; \
+        mkdir -p /opt/riscv64-linux-musl-cross; \
+        tar -xzf /tmp/riscv64-linux-musl-cross.tgz -C /opt/riscv64-linux-musl-cross --strip-components=1; \
+        rm -f /tmp/riscv64-linux-musl-cross.tgz; \
+        ln -s /opt/riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc /usr/local/bin/riscv64-linux-musl-gcc; \
+        ln -s /opt/riscv64-linux-musl-cross/bin/riscv64-linux-musl-g++ /usr/local/bin/riscv64-linux-musl-g++; \
+    fi
 
 RUN mkdir -p "${CARGO_HOME}" /root/.cargo \
     && printf '[registries.crates-io]\nprotocol = "sparse"\n\n[net]\ngit-fetch-with-cli = true\n' > "${CARGO_HOME}/config.toml" \
@@ -247,6 +275,27 @@ RUN . /etc/buildenv \
     && make -j"$(nproc)" \
     && make install \
     && rm -rf "${tmp_dir}"
+
+RUN set -eux; \
+    if [ "${ENABLE_RISCV64_CROSS}" = 1 ]; then \
+        tmp_dir="$(mktemp -d)"; \
+        wget -q "https://github.com/seccomp/libseccomp/releases/download/v${LIBSECCOMP_VERSION}/libseccomp-${LIBSECCOMP_VERSION}.tar.gz" -O "${tmp_dir}/libseccomp.tgz"; \
+        tar -xzf "${tmp_dir}/libseccomp.tgz" -C "${tmp_dir}" --strip-components=1; \
+        cd "${tmp_dir}"; \
+        CC=riscv64-linux-musl-gcc ./configure --host=riscv64-linux-musl --disable-shared --enable-static --prefix=/usr/local/riscv64-linux-musl/libseccomp; \
+        make -j"$(nproc)"; \
+        make install; \
+        rm -rf "${tmp_dir}"; \
+        tmp_dir="$(mktemp -d)"; \
+        curl -fsSL "https://people.redhat.com/sgrubb/libcap-ng/libcap-ng-${LIBCAP_NG_VERSION}.tar.gz" -o "${tmp_dir}/libcap-ng.tgz"; \
+        echo "${LIBCAP_NG_SHA256}  ${tmp_dir}/libcap-ng.tgz" | sha256sum -c -; \
+        tar -xzf "${tmp_dir}/libcap-ng.tgz" -C "${tmp_dir}" --strip-components=1; \
+        cd "${tmp_dir}"; \
+        CC=riscv64-linux-musl-gcc ./configure --host=riscv64-linux-musl --disable-shared --enable-static --prefix=/usr/local/riscv64-linux-musl/libcap-ng; \
+        make -j"$(nproc)"; \
+        make install; \
+        rm -rf "${tmp_dir}"; \
+    fi
 
 RUN . /etc/buildenv \
     && openssl_dir=/usr/include/${TARGET_UNAME_ARCH}-linux-gnu/openssl \
@@ -268,7 +317,12 @@ RUN . /etc/buildenv \
 COPY CubeS3lvol/setup_dep.sh /tmp/s3lvol-dep/setup_dep.sh
 COPY CubeS3lvol/patches /tmp/s3lvol-dep/patches
 RUN chmod +x /tmp/s3lvol-dep/setup_dep.sh \
-    && /tmp/s3lvol-dep/setup_dep.sh --jobs "$(nproc)" --emit-builder-prebuilt \
+    && . /etc/buildenv \
+    && if [ "${BUILD_S3LVOL_DEPS}" = 1 ] || { [ "${BUILD_S3LVOL_DEPS}" = auto ] && [ "${TARGETARCH}" != riscv64 ]; }; then \
+         /tmp/s3lvol-dep/setup_dep.sh --jobs "$(nproc)" --emit-builder-prebuilt; \
+       else \
+         printf 'Skipping CubeS3lvol prebuild for %s (BUILD_S3LVOL_DEPS=%s)\n' "${TARGETARCH}" "${BUILD_S3LVOL_DEPS}"; \
+       fi \
     && rm -rf /tmp/s3lvol-dep
 
 ARG S3LVOL_SPDK_STAMP=unknown
