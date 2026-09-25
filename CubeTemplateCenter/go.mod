@@ -3,7 +3,7 @@ module github.com/tencentcloud/CubeSandbox/CubeTemplateCenter
 go 1.25.7
 
 require (
-	github.com/agiledragon/gomonkey/v2 v2.9.0
+	github.com/agiledragon/gomonkey/v2 v2.14.3
 	github.com/containerd/containerd v1.7.32
 	github.com/gin-gonic/gin v1.11.0
 	github.com/google/go-containerregistry v0.21.6
