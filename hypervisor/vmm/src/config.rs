@@ -137,6 +137,8 @@ pub enum ValidationError {
     KernelMissing,
     /// Missing file value for console
     ConsoleFileMissing,
+    /// No boot vCPUs configured
+    CpusBootZero,
     /// Max is less than boot
     CpusMaxLowerThanBoot,
     /// Both socket and path specified
@@ -212,6 +214,7 @@ impl fmt::Display for ValidationError {
         match self {
             KernelMissing => write!(f, "No kernel specified"),
             ConsoleFileMissing => write!(f, "Path missing when using file console mode"),
+            CpusBootZero => write!(f, "Boot CPUs must be greater than zero"),
             CpusMaxLowerThanBoot => write!(f, "Max CPUs lower than boot CPUs"),
             DiskSocketAndPath => write!(f, "Disk path and vhost socket both provided"),
             VhostUserRequiresSharedMemory => {
@@ -2502,6 +2505,10 @@ impl VmConfig {
             return Err(ValidationError::ConsoleFileMissing);
         }
 
+        if self.cpus.boot_vcpus == 0 {
+            return Err(ValidationError::CpusBootZero);
+        }
+
         if self.cpus.max_vcpus < self.cpus.boot_vcpus {
             return Err(ValidationError::CpusMaxLowerThanBoot);
         }
@@ -3585,6 +3592,13 @@ mod tests {
         assert_eq!(
             invalid_config.validate(),
             Err(ValidationError::ConsoleFileMissing)
+        );
+
+        let mut invalid_config = valid_config.clone();
+        invalid_config.cpus.boot_vcpus = 0;
+        assert_eq!(
+            invalid_config.validate(),
+            Err(ValidationError::CpusBootZero)
         );
 
         let mut invalid_config = valid_config.clone();
