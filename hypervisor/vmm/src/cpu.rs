@@ -29,7 +29,9 @@ use crate::vm_config::CompatibleMode;
 use crate::vm_config::CpusConfig;
 use crate::GuestMemoryMmap;
 use crate::CPU_MANAGER_SNAPSHOT_ID;
-use acpi_tables::{aml, aml::Aml, sdt::Sdt};
+#[cfg(not(target_arch = "riscv64"))]
+use acpi_tables::sdt::Sdt;
+use acpi_tables::{aml, aml::Aml};
 use anyhow::anyhow;
 #[cfg(all(target_arch = "aarch64", feature = "guest_debug"))]
 use arch::aarch64::regs;
@@ -117,6 +119,10 @@ pub enum Error {
 
     #[error("Error configuring vCPU: {0}")]
     VcpuConfiguration(#[source] arch::Error),
+
+    #[cfg(target_arch = "riscv64")]
+    #[error("Error reading vCPU configuration: {0}")]
+    VcpuReadConfiguration(#[source] hypervisor::HypervisorCpuError),
 
     #[cfg(target_arch = "aarch64")]
     #[error("Error fetching preferred target: {0}")]
@@ -371,7 +377,9 @@ impl Vcpu {
         &mut self,
         #[cfg(target_arch = "aarch64")] vm: &Arc<dyn hypervisor::Vm>,
         kernel_entry_point: Option<EntryPoint>,
-        #[cfg(target_arch = "x86_64")] vm_memory: &GuestMemoryAtomic<GuestMemoryMmap>,
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))] vm_memory: &GuestMemoryAtomic<
+            GuestMemoryMmap,
+        >,
         #[cfg(target_arch = "x86_64")] cpuid: Vec<CpuIdEntry>,
         #[cfg(target_arch = "x86_64")] kvm_hyperv: bool,
     ) -> Result<()> {
@@ -382,6 +390,14 @@ impl Vcpu {
                 .map_err(Error::VcpuConfiguration)?;
         }
         info!("Configuring vCPU: cpu_id = {}", self.id);
+        #[cfg(target_arch = "riscv64")]
+        arch::configure_vcpu(
+            &self.vcpu,
+            self.id,
+            kernel_entry_point.map(|entry| (entry, vm_memory)),
+        )
+        .map_err(Error::VcpuConfiguration)?;
+
         #[cfg(target_arch = "x86_64")]
         arch::configure_vcpu(
             &self.vcpu,
@@ -860,14 +876,23 @@ impl CpuManager {
             // AArch64 vCPUs should be initialized after created.
             #[cfg(target_arch = "aarch64")]
             vcpu.init(&self.vm)?;
-
+            #[cfg(target_arch = "riscv64")]
+            {
+                let _ = snapshot;
+                return Err(Error::StartRestoreVcpu(anyhow!(
+                    "RISC-V vCPU snapshot restore is not implemented"
+                )));
+            }
+            #[cfg(not(target_arch = "riscv64"))]
             vcpu.restore(snapshot).expect("Failed to restore vCPU");
         } else {
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
             vcpu.configure(
                 entry_point,
                 &self.vm_memory,
+                #[cfg(target_arch = "x86_64")]
                 self.cpuid.clone(),
+                #[cfg(target_arch = "x86_64")]
                 self.config.kvm_hyperv,
             )?;
 
@@ -930,8 +955,7 @@ impl CpuManager {
         vcpu_thread_barrier: Arc<Barrier>,
         inserting: bool,
     ) -> Result<()> {
-        // WORKAROUND: force reset event into shutdown.
-        let reset_evt = self.exit_evt.try_clone().unwrap();
+        let reset_evt = self.reset_evt.try_clone().unwrap();
         let exit_evt = self.exit_evt.try_clone().unwrap();
         #[cfg(feature = "guest_debug")]
         let vm_debug_evt = self.vm_debug_evt.try_clone().unwrap();
@@ -1224,6 +1248,16 @@ impl CpuManager {
         self.create_vcpus(self.boot_vcpus(), entry_point)
     }
 
+    #[cfg(target_arch = "riscv64")]
+    pub fn configure_boot_vcpus(&mut self, entry_point: EntryPoint) -> Result<()> {
+        for vcpu in &self.vcpus {
+            vcpu.lock()
+                .unwrap()
+                .configure(Some(entry_point), &self.vm_memory)?;
+        }
+        Ok(())
+    }
+
     // Starts all the vCPUs that the VM is booting with. Blocks until all vCPUs are running.
     pub fn start_boot_vcpus(&mut self, paused: bool) -> Result<()> {
         self.activate_vcpus(self.boot_vcpus(), false, Some(paused))
@@ -1304,6 +1338,11 @@ impl CpuManager {
         self.config.boot_vcpus
     }
 
+    #[cfg(target_arch = "riscv64")]
+    pub fn boot_vcpu(&self) -> Arc<dyn hypervisor::Vcpu> {
+        self.vcpus[0].lock().unwrap().vcpu.clone()
+    }
+
     pub fn max_vcpus(&self) -> u8 {
         self.config.max_vcpus
     }
@@ -1343,6 +1382,7 @@ impl CpuManager {
             .map(|t| (t.threads_per_core, t.cores_per_die, t.packages))
     }
 
+    #[cfg(not(target_arch = "riscv64"))]
     pub fn create_madt(&self) -> Sdt {
         use crate::acpi;
         // This is also checked in the commandline parsing.

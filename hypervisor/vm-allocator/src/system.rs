@@ -30,7 +30,7 @@ fn pagesize() -> usize {
 /// ```
 /// # #[cfg(target_arch = "x86_64")]
 /// # use vm_allocator::{GsiApic, SystemAllocator};
-/// # #[cfg(target_arch = "aarch64")]
+/// # #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 /// # use vm_allocator::SystemAllocator;
 /// # use vm_memory::{Address, GuestAddress, GuestUsize};
 ///   let mut allocator = SystemAllocator::new(
@@ -41,11 +41,11 @@ fn pagesize() -> usize {
 ///           #[cfg(target_arch = "x86_64")] vec![GsiApic::new(5, 19)]).unwrap();
 ///   #[cfg(target_arch = "x86_64")]
 ///   assert_eq!(allocator.allocate_irq(), Some(5));
-///   #[cfg(target_arch = "aarch64")]
+///   #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 ///   assert_eq!(allocator.allocate_irq(), Some(32));
 ///   #[cfg(target_arch = "x86_64")]
 ///   assert_eq!(allocator.allocate_irq(), Some(6));
-///   #[cfg(target_arch = "aarch64")]
+///   #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 ///   assert_eq!(allocator.allocate_irq(), Some(33));
 ///   assert_eq!(allocator.allocate_platform_mmio_addresses(None, 0x1000, Some(0x1000)), Some(GuestAddress(0x1fff_f000)));
 ///
@@ -89,7 +89,7 @@ impl SystemAllocator {
             mmio_hole_address_space: AddressAllocator::new(mmio_hole_base, mmio_hole_size)?,
             #[cfg(target_arch = "x86_64")]
             gsi_allocator: GsiAllocator::new(apics),
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             gsi_allocator: GsiAllocator::new(),
         })
     }

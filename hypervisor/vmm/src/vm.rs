@@ -47,7 +47,7 @@ use arch::layout::{KVM_IDENTITY_MAP_START, KVM_TSS_START};
 #[cfg(feature = "tdx")]
 use arch::x86_64::tdx::TdvfSection;
 use arch::EntryPoint;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use arch::PciSpaceInfo;
 use arch::{NumaNode, NumaNodes};
 #[cfg(target_arch = "aarch64")]
@@ -60,6 +60,8 @@ use event_notifier::{event_notify, NotifyEvent};
 use gdbstub_arch::aarch64::reg::AArch64CoreRegs as CoreRegs;
 #[cfg(all(target_arch = "x86_64", feature = "guest_debug"))]
 use gdbstub_arch::x86::reg::X86_64CoreRegs as CoreRegs;
+#[cfg(target_arch = "riscv64")]
+use hypervisor::kvm::kvm_bindings;
 use hypervisor::HypervisorType;
 use hypervisor::{HypervisorVmError, VmOps};
 use linux_loader::cmdline::Cmdline;
@@ -67,7 +69,7 @@ use linux_loader::cmdline::Cmdline;
 use linux_loader::elf;
 #[cfg(target_arch = "x86_64")]
 use linux_loader::loader::elf::PvhBootCapability::PvhEntryPresent;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use linux_loader::loader::pe::Error::InvalidImageMagicNumber;
 use linux_loader::loader::KernelLoader;
 use seccompiler::{apply_filter, SeccompAction};
@@ -313,6 +315,9 @@ pub enum Error {
 
     #[error("Payload configuration is not bootable")]
     InvalidPayload,
+
+    #[error("Operation is not supported on riscv64: {0}")]
+    Riscv64Unsupported(&'static str),
 
     #[cfg(feature = "guest_debug")]
     #[error("Error coredumping VM: {0:?}")]
@@ -610,6 +615,13 @@ impl Vm {
             vcpu_started,
         )
         .map_err(Error::CpuManager)?;
+
+        #[cfg(target_arch = "riscv64")]
+        cpu_manager
+            .lock()
+            .unwrap()
+            .create_boot_vcpus(None)
+            .map_err(Error::CpuManager)?;
 
         let on_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
 
@@ -937,14 +949,16 @@ impl Vm {
 
     fn generate_cmdline(
         payload: &PayloadConfig,
-        #[cfg(target_arch = "aarch64")] device_manager: &Arc<Mutex<DeviceManager>>,
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))] device_manager: &Arc<
+            Mutex<DeviceManager>,
+        >,
     ) -> Result<Cmdline> {
         let mut cmdline = Cmdline::new(arch::CMDLINE_MAX_SIZE).map_err(Error::CmdLineCreate)?;
         if let Some(s) = payload.cmdline.as_ref() {
             cmdline.insert_str(s).map_err(Error::CmdLineInsertStr)?;
         }
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         for entry in device_manager.lock().unwrap().cmdline_additions() {
             cmdline.insert_str(entry).map_err(Error::CmdLineInsertStr)?;
         }
@@ -993,6 +1007,36 @@ impl Vm {
                 Self::load_firmware(&firmware, memory_manager)?;
                 arch::layout::UEFI_START
             }
+            _ => return Err(Error::InvalidPayload),
+        };
+
+        Ok(EntryPoint { entry_addr })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn load_kernel(
+        firmware: Option<File>,
+        kernel: Option<File>,
+        memory_manager: Arc<Mutex<MemoryManager>>,
+    ) -> Result<EntryPoint> {
+        let guest_memory = memory_manager.lock().as_ref().unwrap().guest_memory();
+        let mem = guest_memory.memory();
+        let alignment = 0x20_0000;
+        let aligned_kernel_addr = (arch::layout::KERNEL_START.0 + alignment - 1) & !(alignment - 1);
+        let entry_addr = match (firmware, kernel) {
+            (None, Some(mut kernel)) => match linux_loader::loader::pe::PE::load(
+                mem.deref(),
+                Some(GuestAddress(aligned_kernel_addr)),
+                &mut kernel,
+                None,
+            ) {
+                Ok(entry_addr) => entry_addr.kernel_load,
+                Err(linux_loader::loader::Error::Pe(InvalidImageMagicNumber)) => {
+                    unimplemented!("RISC-V UEFI boot is not implemented")
+                }
+                Err(e) => return Err(Error::KernelLoad(e)),
+            },
+            (Some(_), None) => unimplemented!("RISC-V firmware boot is not implemented"),
             _ => return Err(Error::InvalidPayload),
         };
 
@@ -1060,7 +1104,7 @@ impl Vm {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     fn load_payload(
         payload: &PayloadConfig,
         memory_manager: Arc<Mutex<MemoryManager>>,
@@ -1169,6 +1213,124 @@ impl Vm {
         Ok(())
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn configure_system(&mut self) -> Result<()> {
+        let cmdline = Self::generate_cmdline(
+            self.config.lock().unwrap().payload.as_ref().unwrap(),
+            &self.device_manager,
+        )?;
+        let (num_vcpu, boot_vcpu) = {
+            let cpu_manager = self.cpu_manager.lock().unwrap();
+            (cpu_manager.boot_vcpus(), cpu_manager.boot_vcpu())
+        };
+        let timebase_frequency = boot_vcpu
+            .get_non_core_reg(
+                kvm_bindings::KVM_REG_RISCV_TIMER,
+                hypervisor::offset_of!(kvm_bindings::kvm_riscv_timer, frequency),
+            )
+            .map_err(cpu::Error::VcpuReadConfiguration)
+            .map_err(Error::CpuManager)?;
+        let satp_mode = boot_vcpu
+            .get_non_core_reg(
+                kvm_bindings::KVM_REG_RISCV_CONFIG,
+                hypervisor::offset_of!(kvm_bindings::kvm_riscv_config, satp_mode),
+            )
+            .map_err(cpu::Error::VcpuReadConfiguration)
+            .map_err(Error::CpuManager)?;
+        let isa_bits = boot_vcpu
+            .get_non_core_reg(
+                kvm_bindings::KVM_REG_RISCV_CONFIG,
+                hypervisor::offset_of!(kvm_bindings::kvm_riscv_config, isa),
+            )
+            .map_err(cpu::Error::VcpuReadConfiguration)
+            .map_err(Error::CpuManager)?;
+        let timebase_frequency = u32::try_from(timebase_frequency).map_err(|_| {
+            Error::ConfigureSystem(arch::Error::PlatformSpecific(
+                arch::riscv64::Error::InvalidCpuConfiguration,
+            ))
+        })?;
+        let mmu_type = match satp_mode {
+            8 => "riscv,sv39",
+            9 => "riscv,sv48",
+            10 => "riscv,sv57",
+            _ => {
+                return Err(Error::ConfigureSystem(arch::Error::PlatformSpecific(
+                    arch::riscv64::Error::InvalidCpuConfiguration,
+                )))
+            }
+        };
+        let required_isa = (1 << (b'i' - b'a'))
+            | (1 << (b'm' - b'a'))
+            | (1 << (b'a' - b'a'))
+            | (1 << (b'f' - b'a'))
+            | (1 << (b'd' - b'a'))
+            | (1 << (b'c' - b'a'));
+        let has_ssaia = boot_vcpu
+            .has_isa_extension(kvm_bindings::KVM_RISCV_ISA_EXT_ID_KVM_RISCV_ISA_EXT_SSAIA)
+            .map_err(cpu::Error::VcpuReadConfiguration)
+            .map_err(Error::CpuManager)?;
+        if isa_bits & required_isa != required_isa || !has_ssaia {
+            return Err(Error::ConfigureSystem(arch::Error::PlatformSpecific(
+                arch::riscv64::Error::InvalidCpuConfiguration,
+            )));
+        }
+        let mem = self.memory_manager.lock().unwrap().boot_guest_memory();
+        let initramfs_config = match self.initramfs {
+            Some(_) => Some(self.load_initramfs(&mem)?),
+            None => None,
+        };
+        let device_info = self
+            .device_manager
+            .lock()
+            .unwrap()
+            .get_device_info()
+            .clone();
+        let pci_space_info: Vec<PciSpaceInfo> = self
+            .device_manager
+            .lock()
+            .unwrap()
+            .pci_segments()
+            .iter()
+            .map(|pci_segment| PciSpaceInfo {
+                pci_segment_id: pci_segment.id,
+                mmio_config_address: pci_segment.mmio_config_address,
+                pci_device_space_start: pci_segment.start_of_device_area,
+                pci_device_space_size: pci_segment.end_of_device_area
+                    - pci_segment.start_of_device_area
+                    + 1,
+                pci_irq_slots: pci_segment.pci_irq_slots,
+            })
+            .collect();
+        let vaia = self
+            .device_manager
+            .lock()
+            .unwrap()
+            .get_interrupt_controller()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .get_vaia()
+            .map_err(|_| {
+                Error::ConfigureSystem(arch::Error::PlatformSpecific(
+                    arch::riscv64::Error::SetupAia,
+                ))
+            })?;
+
+        arch::configure_system(
+            &mem,
+            cmdline.as_cstring().unwrap().to_str().unwrap(),
+            u32::from(num_vcpu),
+            timebase_frequency,
+            mmu_type,
+            "rv64imafdc_ssaia",
+            &device_info,
+            &initramfs_config,
+            &pci_space_info,
+            &vaia,
+        )
+        .map_err(Error::ConfigureSystem)
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn configure_system(&mut self, _rsdp_addr: GuestAddress) -> Result<()> {
         let cmdline = Self::generate_cmdline(
@@ -1199,6 +1361,7 @@ impl Vm {
                 pci_device_space_size: pci_segment.end_of_device_area
                     - pci_segment.start_of_device_area
                     + 1,
+                pci_irq_slots: pci_segment.pci_irq_slots,
             };
             pci_space_info.push(pci_space);
         }
@@ -2097,6 +2260,7 @@ impl Vm {
     // In case of TDX being used, this is a no-op since the tables will be
     // created and passed when populating the HOB.
 
+    #[cfg(not(target_arch = "riscv64"))]
     fn create_acpi_tables(&self) -> Option<GuestAddress> {
         #[cfg(feature = "tdx")]
         if self.config.lock().unwrap().is_tdx_enabled() {
@@ -2164,11 +2328,21 @@ impl Vm {
         }
 
         // Create and configure vcpus
+        #[cfg(not(target_arch = "riscv64"))]
         self.cpu_manager
             .lock()
             .unwrap()
             .create_boot_vcpus(entry_point)
             .map_err(Error::CpuManager)?;
+
+        #[cfg(target_arch = "riscv64")]
+        if let Some(entry_point) = entry_point {
+            self.cpu_manager
+                .lock()
+                .unwrap()
+                .configure_boot_vcpus(entry_point)
+                .map_err(Error::CpuManager)?;
+        }
 
         #[cfg(feature = "tdx")]
         let sections = if tdx_enabled {
@@ -2192,6 +2366,7 @@ impl Vm {
         let rsdp_addr = self.create_acpi_tables();
 
         // Configure shared state based on loaded kernel
+        #[cfg(not(target_arch = "riscv64"))]
         entry_point
             .map(|_| {
                 // Safe to unwrap rsdp_addr as we know it can't be None when
@@ -2199,6 +2374,11 @@ impl Vm {
                 self.configure_system(rsdp_addr.unwrap())
             })
             .transpose()?;
+
+        #[cfg(target_arch = "riscv64")]
+        if entry_point.is_some() {
+            self.configure_system()?;
+        }
 
         #[cfg(feature = "tdx")]
         if let Some(hob_address) = hob_address {
@@ -2459,6 +2639,11 @@ impl Vm {
             .unwrap()
             .activate_virtio_devices()
             .map_err(Error::ActivateVirtioDevices)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn power_button(&self) -> Result<()> {
+        unimplemented!("RISC-V power button is not implemented")
     }
 
     #[cfg(target_arch = "x86_64")]

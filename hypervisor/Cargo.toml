@@ -106,7 +106,7 @@ members = [
 linux-loader = "0.13.0"
 seccompiler = "0.3.0"
 serde = "1.0.208"
-vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "64171f3", default-features = false }
+vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "bdbb1cd486484faa23db48c82d51484e2ee43692", default-features = false }
 vhost = { git = "https://github.com/rust-vmm/vhost", rev = "d983ae0" }
 vhost-user-backend = { git = "https://github.com/rust-vmm/vhost", rev = "d983ae0" }
 virtio-bindings = "0.1.0"

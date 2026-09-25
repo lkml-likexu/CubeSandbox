@@ -66,6 +66,7 @@ use vmm_sys_util::signal::unblock_signal;
 use vmm_sys_util::sock_ctrl_msg::ScmSocket;
 use vmm_sys_util::terminal::Terminal;
 
+#[cfg(not(target_arch = "riscv64"))]
 mod acpi;
 pub mod api;
 mod clone3;
@@ -690,6 +691,11 @@ impl Vmm {
         &mut self,
         snapshot_config: &SnapshotConfig,
     ) -> result::Result<(), VmError> {
+        #[cfg(target_arch = "riscv64")]
+        return Err(VmError::Riscv64Unsupported(
+            "pause-to-snapshot requires vAIA state migration",
+        ));
+
         self.vm_pause()?;
         self.vm_snapshot(snapshot_config)?;
         self.vm_delete()
@@ -711,6 +717,12 @@ impl Vmm {
     }
 
     fn vm_snapshot(&mut self, snapshot_config: &SnapshotConfig) -> result::Result<(), VmError> {
+        #[cfg(target_arch = "riscv64")]
+        return Err(VmError::Riscv64Unsupported(
+            "snapshot requires vAIA state migration",
+        ));
+
+        #[cfg(not(target_arch = "riscv64"))]
         if let Some(ref mut vm) = self.vm {
             vm.snapshot()
                 .map_err(VmError::Snapshot)
@@ -724,6 +736,11 @@ impl Vmm {
     }
 
     fn vm_restore(&mut self, restore_cfg: RestoreConfig) -> result::Result<(), VmError> {
+        #[cfg(target_arch = "riscv64")]
+        return Err(VmError::Riscv64Unsupported(
+            "restore requires vAIA state migration",
+        ));
+
         if self.vm.is_some() || self.vm_config.is_some() {
             return Err(VmError::VmAlreadyCreated);
         }
@@ -1463,6 +1480,11 @@ impl Vmm {
         &mut self,
         receive_data_migration: VmReceiveMigrationData,
     ) -> result::Result<(), MigratableError> {
+        #[cfg(target_arch = "riscv64")]
+        return Err(MigratableError::MigrateReceive(anyhow!(
+            "RISC-V live migration requires vAIA state migration"
+        )));
+
         info!(
             "Receiving migration: receiver_url = {}",
             receive_data_migration.receiver_url
@@ -1787,6 +1809,11 @@ impl Vmm {
         &mut self,
         send_data_migration: VmSendMigrationData,
     ) -> result::Result<(), MigratableError> {
+        #[cfg(target_arch = "riscv64")]
+        return Err(MigratableError::MigrateSend(anyhow!(
+            "RISC-V live migration requires vAIA state migration"
+        )));
+
         info!(
             "Sending migration: destination_url = {}, local = {}",
             send_data_migration.destination_url, send_data_migration.local
@@ -2418,6 +2445,26 @@ mod unit_tests {
             sys_ctrl: false,
             ivshmem: None,
         })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[test]
+    fn test_riscv64_live_migration_rejected() {
+        let mut vmm = create_dummy_vmm();
+
+        assert!(matches!(
+            vmm.vm_receive_migration(VmReceiveMigrationData {
+                receiver_url: "unix:/tmp/cube-riscv64-migration-test".to_string(),
+            }),
+            Err(MigratableError::MigrateReceive(_))
+        ));
+        assert!(matches!(
+            vmm.vm_send_migration(VmSendMigrationData {
+                destination_url: "unix:/tmp/cube-riscv64-migration-test".to_string(),
+                local: false,
+            }),
+            Err(MigratableError::MigrateSend(_))
+        ));
     }
 
     #[test]

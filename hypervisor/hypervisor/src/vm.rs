@@ -12,6 +12,8 @@
 use crate::aarch64::VcpuInit;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::aarch64::gic::{Vgic, VgicConfig};
+#[cfg(target_arch = "riscv64")]
+use crate::arch::riscv64::aia::{Vaia, VaiaConfig};
 #[cfg(feature = "tdx")]
 use crate::arch::x86::CpuIdEntry;
 use crate::cpu::Vcpu;
@@ -23,7 +25,7 @@ use std::any::Any;
 #[cfg(target_arch = "x86_64")]
 use std::fs::File;
 use std::sync::Arc;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use std::sync::Mutex;
 use thiserror::Error;
 use vmm_sys_util::eventfd::EventFd;
@@ -213,6 +215,11 @@ pub enum HypervisorVmError {
     ///
     #[error("Failed to create Vgic: {0}")]
     CreateVgic(#[source] anyhow::Error),
+    ///
+    /// Create Vaia error.
+    ///
+    #[error("Failed to create Vaia: {0}")]
+    CreateVaia(#[source] anyhow::Error),
 }
 ///
 /// Result type for returning from a function
@@ -265,6 +272,7 @@ pub trait Vm: Send + Sync + Any {
     /// Sets the address of the three-page region in the VM's address space.
     fn set_tss_address(&self, offset: usize) -> Result<()>;
     /// Creates an in-kernel interrupt controller.
+    #[cfg(not(target_arch = "riscv64"))]
     fn create_irq_chip(&self) -> Result<()>;
     /// Registers an event that will, when signaled, trigger the `gsi` IRQ.
     fn register_irqfd(&self, fd: &EventFd, gsi: u32) -> Result<()>;
@@ -274,6 +282,8 @@ pub trait Vm: Send + Sync + Any {
     fn create_vcpu(&self, id: u8, vm_ops: Option<Arc<dyn VmOps>>) -> Result<Arc<dyn Vcpu>>;
     #[cfg(target_arch = "aarch64")]
     fn create_vgic(&self, config: VgicConfig) -> Result<Arc<Mutex<dyn Vgic>>>;
+    #[cfg(target_arch = "riscv64")]
+    fn create_vaia(&self, config: VaiaConfig) -> Result<Arc<Mutex<dyn Vaia>>>;
 
     /// Registers an event to be signaled whenever a certain address is written to.
     fn register_ioevent(

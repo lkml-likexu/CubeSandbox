@@ -540,11 +540,11 @@ impl VfioCommon {
 
             let bar_addr = match region_type {
                 PciBarRegionType::IoRegion => {
-                    #[cfg(target_arch = "aarch64")]
+                    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
                     unimplemented!();
 
                     // The address needs to be 4 bytes aligned.
-                    #[cfg(not(target_arch = "aarch64"))]
+                    #[cfg(target_arch = "x86_64")]
                     allocator
                         .lock()
                         .unwrap()

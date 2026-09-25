@@ -1683,6 +1683,7 @@ impl MemoryManager {
             .checked_add(1)
             .ok_or(Error::GuestAddressOverFlow)?;
 
+        #[cfg(not(target_arch = "riscv64"))]
         if mem_end < arch::layout::MEM_32BIT_RESERVED_START {
             return Ok(arch::layout::RAM_64BIT_START);
         }

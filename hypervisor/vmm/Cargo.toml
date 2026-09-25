@@ -50,7 +50,7 @@ thiserror = "1.0.37"
 tokio = { version = "=1.40.0", features = ["full"] }
 tracer = { path = "../tracer" }
 uuid = "1.2.1"
-vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "64171f3", default-features = false }
+vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "bdbb1cd486484faa23db48c82d51484e2ee43692", default-features = false }
 vfio_user = { path = "../vfio_user" }
 vhdx = { path = "../vhdx" }
 virtio-devices = { path = "../virtio-devices" }

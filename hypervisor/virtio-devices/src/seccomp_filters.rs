@@ -95,7 +95,7 @@ fn virtio_block_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
         // pause-snapshot raises SIGSYS when seccomp is not Allow.
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_poll, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_ppoll, vec![]),
         (libc::SYS_prctl, vec![]),
         (libc::SYS_pread64, vec![]),
@@ -187,7 +187,7 @@ fn virtio_vhost_net_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
         (libc::SYS_socket, vec![]),
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_unlink, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_unlinkat, vec![]),
     ]
 }
@@ -348,6 +348,7 @@ fn virtio_fs_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
         (libc::SYS_read, vec![]),
         (libc::SYS_readlinkat, vec![]),
         (libc::SYS_recvmsg, vec![]),
+        #[cfg(not(target_arch = "riscv64"))]
         (libc::SYS_renameat, vec![]),
         (libc::SYS_renameat2, vec![]),
         (libc::SYS_removexattr, vec![]),

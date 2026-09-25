@@ -13,7 +13,7 @@ mshv = ["vfio-ioctls/mshv"]
 anyhow = "1.0.86"
 byteorder = "1.4.3"
 hypervisor = { path = "../hypervisor" }
-vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "64171f3", default-features = false }
+vfio-ioctls = { git = "https://github.com/rust-vmm/vfio", rev = "bdbb1cd486484faa23db48c82d51484e2ee43692", default-features = false }
 vfio_user = { path = "../vfio_user" }
 vmm-sys-util = "0.12.1"
 libc = "0.2.137"

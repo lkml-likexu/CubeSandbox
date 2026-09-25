@@ -25,26 +25,29 @@ use crate::GuestRegionMmap;
 use crate::PciDeviceInfo;
 use crate::{device_node, DEVICE_MANAGER_SNAPSHOT_ID};
 use acpi_tables::sdt::GenericAddress;
+#[cfg(not(target_arch = "riscv64"))]
 use acpi_tables::{aml, aml::Aml};
 use anyhow::anyhow;
 use arch::layout;
 #[cfg(target_arch = "x86_64")]
 use arch::layout::{APIC_START, IOAPIC_SIZE, IOAPIC_START};
 use arch::NumaNodes;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use arch::{DeviceType, MmioDeviceInfo};
 use block_util::{
     async_io::DiskFile, block_io_uring_is_supported, detect_image_type,
     fixed_vhd_async::FixedVhdDiskAsync, fixed_vhd_sync::FixedVhdDiskSync, qcow_sync::QcowDiskSync,
     raw_async::RawFileDisk, raw_sync::RawFileDiskSync, vhdx_sync::VhdxDiskSync, ImageType,
 };
+#[cfg(target_arch = "riscv64")]
+use devices::aia;
 #[cfg(target_arch = "aarch64")]
 use devices::gic;
 #[cfg(target_arch = "x86_64")]
 use devices::ioapic;
 #[cfg(target_arch = "aarch64")]
 use devices::legacy::Pl011;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use devices::legacy::Serial;
 use devices::{
     interrupt_controller, interrupt_controller::InterruptController, AcpiNotificationFlags,
@@ -106,7 +109,7 @@ use vm_virtio::AccessPlatform;
 use vm_virtio::VirtioDeviceType;
 use vmm_sys_util::eventfd::EventFd;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 const MMIO_LEN: u64 = 0x1000;
 
 // Singleton devices / devices the user cannot name
@@ -868,9 +871,11 @@ pub struct DeviceManager {
     interrupt_controller: Option<Arc<Mutex<ioapic::Ioapic>>>,
     #[cfg(target_arch = "aarch64")]
     interrupt_controller: Option<Arc<Mutex<gic::Gic>>>,
+    #[cfg(target_arch = "riscv64")]
+    interrupt_controller: Option<Arc<Mutex<aia::Aia>>>,
 
-    // Things to be added to the commandline (e.g. aarch64 early console)
-    #[cfg(target_arch = "aarch64")]
+    // Things to be added to the commandline (e.g. aarch64 or riscv64 early console)
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     cmdline_additions: Vec<String>,
 
     // ACPI GED notification device
@@ -930,7 +935,7 @@ pub struct DeviceManager {
     exit_evt: EventFd,
     reset_evt: EventFd,
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     id_to_dev_info: HashMap<(DeviceType, String), MmioDeviceInfo>,
 
     // seccomp action
@@ -1093,7 +1098,7 @@ impl DeviceManager {
             address_manager: Arc::clone(&address_manager),
             console: Arc::new(Console::default()),
             interrupt_controller: None,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             cmdline_additions: Vec::new(),
             ged_notification_device: None,
             config,
@@ -1112,7 +1117,7 @@ impl DeviceManager {
             device_tree,
             exit_evt: exit_evt.try_clone().map_err(DeviceManagerError::EventFd)?,
             reset_evt: reset_evt.try_clone().map_err(DeviceManagerError::EventFd)?,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             id_to_dev_info: HashMap::new(),
             seccomp_action,
             numa_nodes,
@@ -1260,6 +1265,28 @@ impl DeviceManager {
         #[cfg(target_arch = "aarch64")]
         self.add_legacy_devices(&legacy_interrupt_manager)?;
 
+        #[cfg(target_arch = "riscv64")]
+        if self.config.lock().unwrap().sys_ctrl {
+            let id = String::from(SYS_CTRL_DEVICE_NAME);
+            let sys_ctrl = Arc::new(Mutex::new(devices::legacy::SysCtrl::new(id.clone(), None)));
+            self.sys_ctrl = Some(Arc::clone(&sys_ctrl));
+            self.bus_devices
+                .push(Arc::clone(&sys_ctrl) as Arc<Mutex<dyn BusDevice>>);
+            let addr = arch::layout::LEGACY_SYS_CTRL_MAPPED_IO_START;
+            self.address_manager
+                .mmio_bus
+                .insert(
+                    Arc::clone(&sys_ctrl) as Arc<Mutex<dyn BusDevice>>,
+                    addr.0,
+                    MMIO_LEN,
+                )
+                .map_err(DeviceManagerError::BusError)?;
+            self.device_tree
+                .lock()
+                .unwrap()
+                .insert(id.clone(), device_node!(id, sys_ctrl));
+        }
+
         {
             // WORKAROUND: force reset event into shutdown.
             self.ged_notification_device = self.add_acpi_devices(
@@ -1281,6 +1308,7 @@ impl DeviceManager {
             console_resize_pipe,
         )?;
 
+        #[cfg(not(target_arch = "riscv64"))]
         if let Some(tpm) = self.config.clone().lock().unwrap().tpm.as_ref() {
             let tpm_dev = self.add_tpm_device(tpm.socket.clone())?;
             self.bus_devices
@@ -1327,11 +1355,22 @@ impl DeviceManager {
                 vgic_config.msi_addr + vgic_config.msi_size - 1,
             )
         }
+        #[cfg(target_arch = "riscv64")]
+        {
+            let vcpus = self.config.lock().unwrap().cpus.boot_vcpus;
+            let vaia_config = aia::Aia::create_default_config(vcpus.into());
+            (
+                vaia_config.imsic_addr,
+                vaia_config.imsic_addr
+                    + u64::from(vaia_config.vcpu_count) * arch::layout::IMSIC_SIZE
+                    - 1,
+            )
+        }
         #[cfg(target_arch = "x86_64")]
         (0xfee0_0000, 0xfeef_ffff)
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     /// Gets the information of the devices registered up to some point in time.
     pub fn get_device_info(&self) -> &HashMap<(DeviceType, String), MmioDeviceInfo> {
         &self.id_to_dev_info
@@ -1459,6 +1498,37 @@ impl DeviceManager {
 
     #[cfg(target_arch = "aarch64")]
     pub fn get_interrupt_controller(&mut self) -> Option<&Arc<Mutex<gic::Gic>>> {
+        self.interrupt_controller.as_ref()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn add_interrupt_controller(
+        &mut self,
+    ) -> DeviceManagerResult<Arc<Mutex<dyn InterruptController>>> {
+        let interrupt_controller: Arc<Mutex<aia::Aia>> = Arc::new(Mutex::new(
+            aia::Aia::new(
+                self.config.lock().unwrap().cpus.boot_vcpus,
+                Arc::clone(&self.msi_interrupt_manager),
+                self.address_manager.vm.clone(),
+            )
+            .map_err(DeviceManagerError::CreateInterruptController)?,
+        ));
+
+        self.interrupt_controller = Some(interrupt_controller.clone());
+        let id = String::from(aia::_AIA_SNAPSHOT_ID);
+        if snapshot_from_id(self.snapshot.as_ref(), id.as_str()).is_some() {
+            unimplemented!("RISC-V AIA snapshot restore is not implemented")
+        }
+        self.device_tree
+            .lock()
+            .unwrap()
+            .insert(id.clone(), device_node!(id, interrupt_controller));
+
+        Ok(interrupt_controller)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn get_interrupt_controller(&mut self) -> Option<&Arc<Mutex<aia::Aia>>> {
         self.interrupt_controller.as_ref()
     }
 
@@ -1862,6 +1932,54 @@ impl DeviceManager {
         Ok(serial)
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn add_serial_device(
+        &mut self,
+        interrupt_manager: &Arc<dyn InterruptManager<GroupConfig = LegacyIrqGroupConfig>>,
+        serial_writer: Option<Box<dyn io::Write + Send>>,
+    ) -> DeviceManagerResult<Arc<Mutex<Serial>>> {
+        let id = String::from(SERIAL_DEVICE_NAME);
+        let serial_irq = self
+            .address_manager
+            .allocator
+            .lock()
+            .unwrap()
+            .allocate_irq()
+            .unwrap();
+        let interrupt_group = interrupt_manager
+            .create_group(LegacyIrqGroupConfig {
+                irq: serial_irq as InterruptIndex,
+            })
+            .map_err(DeviceManagerError::CreateInterruptGroup)?;
+        let serial = Arc::new(Mutex::new(Serial::new(
+            id.clone(),
+            interrupt_group,
+            serial_writer,
+        )));
+        self.bus_devices
+            .push(Arc::clone(&serial) as Arc<Mutex<dyn BusDevice>>);
+        let addr = arch::layout::LEGACY_SERIAL_MAPPED_IO_START;
+        self.address_manager
+            .mmio_bus
+            .insert(serial.clone(), addr.0, MMIO_LEN)
+            .map_err(DeviceManagerError::BusError)?;
+        self.id_to_dev_info.insert(
+            (DeviceType::Serial, DeviceType::Serial.to_string()),
+            MmioDeviceInfo {
+                addr: addr.0,
+                len: MMIO_LEN,
+                irq: serial_irq,
+            },
+        );
+        self.cmdline_additions
+            .push(format!("earlycon=uart,mmio,0x{:08x}", addr.0));
+        self.device_tree
+            .lock()
+            .unwrap()
+            .insert(id.clone(), device_node!(id, serial));
+        Ok(serial)
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn add_serial_device(
         &mut self,
@@ -2149,6 +2267,7 @@ impl DeviceManager {
         Ok(Arc::new(Console { console_resizer }))
     }
 
+    #[cfg(not(target_arch = "riscv64"))]
     fn add_tpm_device(
         &mut self,
         tpm_path: PathBuf,
@@ -3941,7 +4060,7 @@ impl DeviceManager {
         &self.console
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     pub fn cmdline_additions(&self) -> &[String] {
         self.cmdline_additions.as_slice()
     }
@@ -4621,8 +4740,10 @@ fn numa_node_id_from_memory_zone_id(numa_nodes: &NumaNodes, memory_zone_id: &str
     None
 }
 
+#[cfg(not(target_arch = "riscv64"))]
 struct TpmDevice {}
 
+#[cfg(not(target_arch = "riscv64"))]
 impl Aml for TpmDevice {
     fn to_aml_bytes(&self) -> Vec<u8> {
         aml::Device::new(
@@ -4644,6 +4765,7 @@ impl Aml for TpmDevice {
     }
 }
 
+#[cfg(not(target_arch = "riscv64"))]
 impl Aml for DeviceManager {
     fn append_aml_bytes(&self, bytes: &mut Vec<u8>) {
         #[cfg(target_arch = "aarch64")]

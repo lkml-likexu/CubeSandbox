@@ -1,3 +1,4 @@
+// Copyright © 2024 Institute of Software, CAS. All rights reserved.
 // Copyright 2020, ARM Limited.
 //
 // SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause
@@ -26,6 +27,12 @@ pub enum Error {
     EnableInterrupt(io::Error),
     /// Failed creating GIC device.
     CreateGic(hypervisor::HypervisorVmError),
+    #[cfg(target_arch = "riscv64")]
+    /// Failed creating AIA device.
+    CreateAia(hypervisor::HypervisorVmError),
+    #[cfg(target_arch = "riscv64")]
+    /// Failed restoring AIA device.
+    RestoreAia(hypervisor::arch::riscv64::aia::Error),
 }
 
 type Result<T> = result::Result<T, Error>;
@@ -52,7 +59,7 @@ pub struct MsiMessage {
 // Introduce trait InterruptController to uniform the interrupt
 // service provided for devices.
 // Device manager uses this trait without caring whether it is a
-// IOAPIC (X86) or GIC (Arm).
+// IOAPIC (X86), GIC (Arm) or AIA (RISC-V).
 pub trait InterruptController: Send {
     fn service_irq(&mut self, irq: usize) -> Result<()>;
     #[cfg(target_arch = "aarch64")]

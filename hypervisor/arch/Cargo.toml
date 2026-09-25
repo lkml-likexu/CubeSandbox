@@ -6,6 +6,7 @@ edition = "2021"
 
 [features]
 default = []
+kvm = ["hypervisor/kvm"]
 tdx = []
 
 [dependencies]
@@ -24,6 +25,6 @@ vm-migration = { path = "../vm-migration" }
 vmm-sys-util = { version = "0.12.1", features = ["with-serde"] }
 serde_json = "1.0.87"
 
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-fdt_parser = { version = "0.1.4", package = "fdt" }
+[target.'cfg(any(target_arch = "aarch64", target_arch = "riscv64"))'.dependencies]
+fdt_parser = { version = "0.1.5", package = "fdt" }
 vm-fdt = { workspace = true }

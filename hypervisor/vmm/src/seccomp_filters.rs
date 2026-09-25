@@ -396,6 +396,11 @@ fn create_vmm_ioctl_seccomp_rule_kvm() -> Result<Vec<SeccompRule>, BackendError>
     Ok(arch_rules)
 }
 
+#[cfg(all(target_arch = "riscv64", feature = "kvm"))]
+fn create_vmm_ioctl_seccomp_rule_kvm() -> Result<Vec<SeccompRule>, BackendError> {
+    create_vmm_ioctl_seccomp_rule_common(HypervisorType::Kvm)
+}
+
 #[cfg(all(target_arch = "aarch64", feature = "kvm"))]
 fn create_vmm_ioctl_seccomp_rule_kvm() -> Result<Vec<SeccompRule>, BackendError> {
     const KVM_ARM_PREFERRED_TARGET: u64 = 0x8020_aeaf;
@@ -481,7 +486,7 @@ fn pty_foreground_thread_rules() -> Result<Vec<(i64, Vec<SeccompRule>)>, Backend
         (libc::SYS_munmap, vec![]),
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_poll, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_ppoll, vec![]),
         (libc::SYS_read, vec![]),
         (libc::SYS_rt_sigaction, vec![]),
@@ -569,7 +574,7 @@ fn vmm_thread_rules(
         (libc::SYS_pipe2, vec![]),
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_poll, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_ppoll, vec![]),
         (libc::SYS_prctl, vec![]),
         (libc::SYS_pread64, vec![]),
@@ -581,7 +586,7 @@ fn vmm_thread_rules(
         (libc::SYS_readv, vec![]),
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_readlink, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_readlinkat, vec![]),
         (libc::SYS_recvfrom, vec![]),
         (libc::SYS_recvmsg, vec![]),
@@ -672,6 +677,7 @@ fn vmm_thread_rules(
         (libc::SYS_openat2, vec![]),
         (libc::SYS_open_by_handle_at, vec![]),
         (libc::SYS_pwritev2, vec![]),
+        #[cfg(not(target_arch = "riscv64"))]
         (libc::SYS_renameat, vec![]),
         (libc::SYS_renameat2, vec![]),
         (libc::SYS_removexattr, vec![]),
@@ -807,7 +813,7 @@ fn vcpu_thread_rules(
         (libc::SYS_tkill, vec![]),
         #[cfg(target_arch = "x86_64")]
         (libc::SYS_unlink, vec![]),
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
         (libc::SYS_unlinkat, vec![]),
         (libc::SYS_write, vec![]),
         (libc::SYS_writev, vec![]),
