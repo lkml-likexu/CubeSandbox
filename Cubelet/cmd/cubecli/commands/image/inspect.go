@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ var Inspect = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:  "platform",
-			Value: "amd64",
+			Value: runtime.GOARCH,
 			Usage: "Inspect a specific platform",
 		},
 	},
