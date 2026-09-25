@@ -7,12 +7,13 @@ TARGET = $(PROJECT_COMPONENT)
 BUILD_TYPE = release
 MUSL := yes
 HOST_ARCH := $(shell uname -m | sed 's/^arm64$$/aarch64/')
+RUST_ARCH := $(if $(filter riscv64,$(HOST_ARCH)),riscv64gc,$(HOST_ARCH))
 
 EXTRA_RUSTFLAGS :=
 CARGO_TARGET_FLAG :=
 
 ifeq ($(MUSL),yes)
-    TRIPLE ?= $(HOST_ARCH)-unknown-linux-musl
+    TRIPLE ?= $(RUST_ARCH)-unknown-linux-musl
     CARGO_TARGET_FLAG := --target $(TRIPLE)
     override EXTRA_RUSTFLAGS += -C target-feature=+crt-static -C relocation-model=static -C link-arg=-static
     ifeq ($(TRIPLE),x86_64-unknown-linux-musl)
@@ -20,6 +21,9 @@ ifeq ($(MUSL),yes)
     endif
     ifeq ($(TRIPLE),aarch64-unknown-linux-musl)
         export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER ?= musl-gcc
+    endif
+    ifeq ($(TRIPLE),riscv64gc-unknown-linux-musl)
+        export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER ?= riscv64-linux-musl-gcc
     endif
 endif
 

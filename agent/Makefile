@@ -52,12 +52,13 @@ BUILD_TYPE = release
 ##VAR MUSL=yes|no build a fully static native musl binary
 MUSL := yes
 HOST_ARCH := $(shell uname -m | sed 's/^arm64$$/aarch64/')
+RUST_ARCH := $(if $(filter riscv64,$(HOST_ARCH)),riscv64gc,$(HOST_ARCH))
 
 EXTRA_RUSTFLAGS :=
 CARGO_TARGET_FLAG :=
 
 ifeq ($(MUSL),yes)
-    TRIPLE ?= $(HOST_ARCH)-unknown-linux-musl
+    TRIPLE ?= $(RUST_ARCH)-unknown-linux-musl
     CARGO_TARGET_FLAG := --target $(TRIPLE)
     # +crt-static: statically link libc/crt
     # -lpthread: required by libunwind in musl builds (pthread_rwlock_*)
@@ -69,6 +70,9 @@ ifeq ($(MUSL),yes)
     endif
     ifeq ($(TRIPLE),aarch64-unknown-linux-musl)
         export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER ?= musl-gcc
+    endif
+    ifeq ($(TRIPLE),riscv64gc-unknown-linux-musl)
+        export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER ?= riscv64-linux-musl-gcc
     endif
     # Static libseccomp must be built with musl as well. Do not fall back to
     # pkg-config or /usr/lib/*-linux-gnu here: those paths often resolve to

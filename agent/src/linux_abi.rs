@@ -5,7 +5,7 @@
 
 /// Linux ABI related constants.
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use std::fs;
 
 pub const SYSFS_DIR: &str = "/sys";
@@ -14,7 +14,7 @@ pub fn create_pci_root_bus_path() -> String {
     String::from("/devices/pci0000:00")
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn create_pci_root_bus_path() -> String {
     let ret = String::from("/devices/platform/4010000000.pcie/pci0000:00");
 

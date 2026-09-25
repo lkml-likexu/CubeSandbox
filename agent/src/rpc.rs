@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::FileExt;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
@@ -1972,9 +1972,12 @@ pub fn notify_vsock_server_ready() -> Result<()> {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     {
+        #[cfg(target_arch = "aarch64")]
         const SYS_CTRL_MMIO_ADDR: libc::off_t = 0x0903_0000;
+        #[cfg(target_arch = "riscv64")]
+        const SYS_CTRL_MMIO_ADDR: libc::off_t = 0x0800_1000;
         const SYS_CTRL_MMIO_SIZE: usize = 0x1000;
         const SYS_VSOCK_SERVER: u8 = 1 << 3;
 
