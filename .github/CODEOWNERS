@@ -36,9 +36,10 @@
 # still covered by the owning module's rule above when paths overlap)
 /docs/ @fslongjin
 
-# ARM platform
+# Architecture-specific platform support
 *aarch64* @lkml-likexu
 *arm64* @lkml-likexu
+*riscv* @lkml-likexu
 
 # Deployment: one-click / k8s
 /deploy/one-click/ @fslongjin

@@ -13,13 +13,24 @@ on:
       - 'pkgs/CubeLog/**'
       - 'pkgs/proto/**'
       - 'Cubelet/**'
+      - 'CubeNet/**'
       - 'CubeShim/**'
+      - 'third_party/containerd-shim/**'
+      - 'hypervisor/**'
       - 'agent/**'
+      - 'guest-init/**'
+      - 'cubecow/**'
       - 'examples/volume/s3/**'
       - 'docker/Dockerfile.builder'
       - '.github/workflows/build-builder-image.yml'
       - '.github/workflows/build-check.yml'
       - 'Makefile'
+      - 'configs/kernel-oc9.riscv64.config'
+      - 'scripts/build-kernel.sh'
+      - 'CubeNet/vmlinux/riscv64/**'
+      - 'CubeS3lvol/setup_dep.sh'
+      - 'deploy/scripts/docker-install-volume-deps.sh'
+      - 'cube-lifecycle-manager/**'
   pull_request:
     paths:
       - 'CubeAPI/**'
@@ -31,13 +42,24 @@ on:
       - 'pkgs/CubeLog/**'
       - 'pkgs/proto/**'
       - 'Cubelet/**'
+      - 'CubeNet/**'
       - 'CubeShim/**'
+      - 'third_party/containerd-shim/**'
+      - 'hypervisor/**'
       - 'agent/**'
+      - 'guest-init/**'
+      - 'cubecow/**'
       - 'examples/volume/s3/**'
       - 'docker/Dockerfile.builder'
       - '.github/workflows/build-builder-image.yml'
       - '.github/workflows/build-check.yml'
       - 'Makefile'
+      - 'configs/kernel-oc9.riscv64.config'
+      - 'scripts/build-kernel.sh'
+      - 'CubeNet/vmlinux/riscv64/**'
+      - 'CubeS3lvol/setup_dep.sh'
+      - 'deploy/scripts/docker-install-volume-deps.sh'
+      - 'cube-lifecycle-manager/**'
   workflow_dispatch:
 
 concurrency:
@@ -219,6 +241,76 @@ jobs:
               exit 1
             fi
           done <<< "${EXPECTED_BINS}"
+
+  build-riscv64:
+    name: Cross-build RISC-V binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build RISC-V cross builder
+        run: |
+          docker build \
+            --build-arg GITHUB_ACTIONS=true \
+            --build-arg ENABLE_RISCV64_CROSS=1 \
+            --build-arg BUILD_S3LVOL_DEPS=0 \
+            --build-arg RUSTUP_DIST_SERVER=https://static.rust-lang.org \
+            --build-arg RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup \
+            -t cube-sandbox-builder:riscv64-cross \
+            -f docker/Dockerfile.builder .
+
+      - name: Cross-build RISC-V components
+        run: make all-riscv64 RISCV64_BUILDER_IMAGE=cube-sandbox-builder:riscv64-cross SKIP_BUILDER_IMAGE_CHECK=1
+
+      - name: Verify RISC-V ELF outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r binary; do
+            [[ -n "${binary}" ]] || continue
+            test -s "${binary}"
+            test -x "${binary}"
+            readelf -h "${binary}" | grep -q 'Class:.*ELF64'
+            readelf -h "${binary}" | grep -q 'Data:.*little endian'
+            readelf -h "${binary}" | grep -q 'Machine:.*RISC-V'
+          done <<'EOF'
+          _output/bin/cube-agent-riscv64
+          _output/bin/cube-init-riscv64
+          _output/bin/cube-volume-s3-riscv64
+          _output/bin/cube-lifecycle-manager-riscv64
+          _output/bin/cube-api-riscv64
+          _output/bin/cubelet-riscv64
+          _output/bin/cubecli-riscv64
+          _output/bin/cubemaster-riscv64
+          _output/bin/cubemastercli-riscv64
+          _output/bin/templatecenter-riscv64
+          _output/bin/cubeops-riscv64
+          _output/bin/cubeopscli-riscv64
+          _output/bin/cubevsmapdump-riscv64
+          _output/bin/containerd-shim-cube-rs-riscv64
+          _output/bin/cube-runtime-riscv64
+          EOF
+
+          archive=_output/bin/libcubecow-riscv64.a
+          test -s "${archive}"
+          archive_dir="$(mktemp -d)"
+          trap 'rm -rf "${archive_dir}"' EXIT
+          (
+            cd "${archive_dir}"
+            ar x "${GITHUB_WORKSPACE}/${archive}"
+            member_count=0
+            for member in *; do
+              [[ -f "${member}" ]] || continue
+              member_count=$((member_count + 1))
+              readelf -h "${member}" | grep -q 'Class:.*ELF64'
+              readelf -h "${member}" | grep -q 'Data:.*little endian'
+              readelf -h "${member}" | grep -q 'Machine:.*RISC-V'
+            done
+            test "${member_count}" -gt 0
+          )
 
   # Docker smoke build for release images that use repo-root context +
   # adjacent Dockerfile.dockerignore (catches context/ignore regressions).
