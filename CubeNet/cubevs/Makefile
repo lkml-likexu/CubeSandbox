@@ -3,6 +3,7 @@ COVERAGE_REPORT=coverage.html
 
 BPF_GENS := $(wildcard *_bpfel*.go)
 BPF_OBJS := $(wildcard *_bpfel*.o)
+BPF_TARGET_ARCH ?= $(shell go env GOARCH)
 
 ifeq ($(V),1)
 	Q =
@@ -25,7 +26,7 @@ deps:
 .PHONY: gen
 gen:
 	$(call msg,GENERATE BPF)
-	$(Q)go generate ./...
+	$(Q)BPF_TARGET_ARCH=$(BPF_TARGET_ARCH) go generate ./...
 
 .PHONY: fmt
 fmt:

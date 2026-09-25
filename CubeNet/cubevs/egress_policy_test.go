@@ -1,6 +1,6 @@
 package cubevs
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $GOARCH egresspolicy ../src/egress_policy_test.bpf.c -- -I../vmlinux/$GOARCH
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $BPF_TARGET_ARCH egresspolicy ../src/egress_policy_test.bpf.c -- -I../vmlinux/$BPF_TARGET_ARCH
 
 import (
 	"encoding/binary"

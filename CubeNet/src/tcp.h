@@ -8,13 +8,13 @@
 #include "session.h"
 
 /* What TCP flags are set from RST/SYN/FIN/ACK. */
-enum tcp_bit_set {
-	TCP_SYN_SET,
-	TCP_SYNACK_SET,
-	TCP_FIN_SET,
-	TCP_ACK_SET,
-	TCP_RST_SET,
-	TCP_NONE_SET,
+enum cube_tcp_bit_set {
+	CUBE_TCP_SYN_SET,
+	CUBE_TCP_SYNACK_SET,
+	CUBE_TCP_FIN_SET,
+	CUBE_TCP_ACK_SET,
+	CUBE_TCP_RST_SET,
+	CUBE_TCP_NONE_SET,
 };
 
 #define TCP_CONNTRACK_SYN_SENT2	TCP_CONNTRACK_LISTEN
@@ -205,11 +205,11 @@ static const u8 tcp_conntracks[2][6][TCP_CONNTRACK_MAX] = {
  */
 static __always_inline unsigned int get_conntrack_index(bool syn, bool ack, bool fin, bool rst)
 {
-	if (rst) return TCP_RST_SET;
-	else if (syn) return (ack ? TCP_SYNACK_SET : TCP_SYN_SET);
-	else if (fin) return TCP_FIN_SET;
-	else if (ack) return TCP_ACK_SET;
-	else return TCP_NONE_SET;
+	if (rst) return CUBE_TCP_RST_SET;
+	else if (syn) return (ack ? CUBE_TCP_SYNACK_SET : CUBE_TCP_SYN_SET);
+	else if (fin) return CUBE_TCP_FIN_SET;
+	else if (ack) return CUBE_TCP_ACK_SET;
+	else return CUBE_TCP_NONE_SET;
 }
 
 static __always_inline long snat_tcp(struct __sk_buff *skb,
@@ -287,8 +287,8 @@ static __always_inline void update_session(enum ip_conntrack_dir dir, struct nat
 	}
 
 	index = get_conntrack_index(syn, ack, fin, rst);
-	if (index > TCP_NONE_SET) {
-		/* see enum tcp_bit_set */
+	if (index > CUBE_TCP_NONE_SET) {
+		/* see enum cube_tcp_bit_set */
 		return;
 	}
 
@@ -305,7 +305,7 @@ static __always_inline void update_session(enum ip_conntrack_dir dir, struct nat
 
 	new_state = tcp_conntracks[dir][index][old_state];
 
-	if (index == TCP_FIN_SET) {
+	if (index == CUBE_TCP_FIN_SET) {
 		/* A retransmitted FIN from the side that initiated close must not be
 		 * mistaken for the peer's FIN. The generic conntrack table cannot
 		 * distinguish direction once it reaches FIN_WAIT/CLOSE_WAIT, so use

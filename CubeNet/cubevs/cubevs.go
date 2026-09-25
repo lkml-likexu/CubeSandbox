@@ -9,9 +9,9 @@ import (
 	"github.com/florianl/go-tc"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $GOARCH localgw ../src/localgw.bpf.c -- -I../vmlinux/$GOARCH
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $GOARCH mvmtap  ../src/mvmtap.bpf.c  -- -I../vmlinux/$GOARCH
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $GOARCH nodenic ../src/nodenic.bpf.c -- -I../vmlinux/$GOARCH
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $BPF_TARGET_ARCH localgw ../src/localgw.bpf.c -- -I../vmlinux/$BPF_TARGET_ARCH
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $BPF_TARGET_ARCH mvmtap  ../src/mvmtap.bpf.c  -- -I../vmlinux/$BPF_TARGET_ARCH
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $BPF_TARGET_ARCH nodenic ../src/nodenic.bpf.c -- -I../vmlinux/$BPF_TARGET_ARCH
 
 // Params is used to initialize CubeVS.
 type Params struct {

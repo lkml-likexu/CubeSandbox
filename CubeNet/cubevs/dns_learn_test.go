@@ -1,6 +1,6 @@
 package cubevs
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $GOARCH dnslearn ../src/dns_learn_test.bpf.c -- -I../vmlinux/$GOARCH
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target $BPF_TARGET_ARCH dnslearn ../src/dns_learn_test.bpf.c -- -I../vmlinux/$BPF_TARGET_ARCH
 
 import (
 	"encoding/binary"
