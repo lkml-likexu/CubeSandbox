@@ -71,11 +71,11 @@ install_cosfs() {
   arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
   case "${arch}" in
     amd64|x86_64) ;;
-    arm64|aarch64)
+    arm64|aarch64|riscv64)
       # Official cosfs releases ship amd64/x86_64 packages only
-      # (https://github.com/tencentyun/cosfs/releases). Skip on arm until an
-      # arm64 package or source build is available; COS Attach needs cosfs.
-      log "skip cosfs on ${arch}: no official arm64 .deb (temporary)"
+      # (https://github.com/tencentyun/cosfs/releases). Skip until a native
+      # package or source build is available; COS Attach needs cosfs.
+      log "skip cosfs on ${arch}: no official package (temporary)"
       return 0
       ;;
     *)
