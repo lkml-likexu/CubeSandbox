@@ -279,6 +279,8 @@ Cube Sandbox 是一款基于 RustVMM 与 KVM 构建的高性能、开箱即用�
 
 Cube Sandbox 需要一台支持 **KVM** 的 **x86_64 Linux** 环境。
 
+开发者可以使用 `make all-riscv64` 交叉编译面向 `linux/riscv64` 的架构无关控制面、Guest 工具、Cubelet 与 CubeVS/eBPF；该命令会自动构建专用的交叉编译 Builder 镜像。Guest 内核需另行执行 `make guest-kernel KERNEL_SRC=/path/to/linux KERNEL_TARGET_ARCH=riscv64` 构建。CubeShim 现已连接实验性的 RISC-V KVM/AIA VMM 后端，支持直接内核冷启动。由于 vAIA 状态迁移尚未实现，RISC-V 快照与恢复仍被禁用；目前尚未提供发布镜像或受支持的部署路径。
+
 指南带你**四步**完成全部流程 —— 准备服务器、安装 Cube Sandbox、创建沙箱模板、运行第一段 Agent 代码。无需编译源码，几分钟即可上手。
 
 <p align="center">

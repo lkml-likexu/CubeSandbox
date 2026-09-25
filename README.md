@@ -281,6 +281,8 @@ For detailed metrics on startup latency and resource overhead, see the [Core Ope
 
 Cube Sandbox requires an **x86_64 Linux** environment with **KVM** support.
 
+Developer builds can cross-compile the architecture-independent control plane, guest utilities, Cubelet, and CubeVS/eBPF for `linux/riscv64` with `make all-riscv64`; the command builds its dedicated cross-builder image automatically. Build a guest kernel separately with `make guest-kernel KERNEL_SRC=/path/to/linux KERNEL_TARGET_ARCH=riscv64`. CubeShim now builds against the experimental RISC-V KVM/AIA VMM backend for direct-kernel cold boot. RISC-V snapshot/restore remains disabled until vAIA state migration is implemented; release images and a supported deployment path are not yet provided.
+
 The guide walks you through everything in **four steps** — provisioning a server, installing Cube Sandbox, creating a sandbox template, and running your first agent code. No source build needed, up and running in minutes.
 
 <p align="center">
