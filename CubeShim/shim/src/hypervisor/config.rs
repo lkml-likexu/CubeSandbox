@@ -105,14 +105,17 @@ impl VmConfig {
         params.extend(["printk.devkmsg=on".to_string()]);
         #[cfg(target_arch = "aarch64")]
         params.push("console=ttyAMA0,115200".to_string());
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
         params.push("console=hvc0".to_string());
         params.extend([
             "net.ifnames=0".to_string(),
             "audit=0".to_string(),
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
-            "earlyprintk=ttyS0".to_string(),
+        ]);
+        #[cfg(target_arch = "x86_64")]
+        params.push("earlyprintk=ttyS0".to_string());
+        params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
             "mitigations=off".to_string(),
@@ -522,14 +525,17 @@ mod tests {
         params.extend(["printk.devkmsg=on".to_string()]);
         #[cfg(target_arch = "aarch64")]
         params.push("console=ttyAMA0,115200".to_string());
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
         params.push("console=hvc0".to_string());
         params.extend([
             "net.ifnames=0".to_string(),
             "audit=0".to_string(),
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
-            "earlyprintk=ttyS0".to_string(),
+        ]);
+        #[cfg(target_arch = "x86_64")]
+        params.push("earlyprintk=ttyS0".to_string());
+        params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
             "mitigations=off".to_string(),

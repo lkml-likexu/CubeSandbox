@@ -24,6 +24,20 @@ use super::config::PciDeviceInfo;
 
 const CALLE_ACTION_ADD_DEV_PRE: &str = "AddDevice";
 
+fn ensure_snapshot_supported() -> CResult<()> {
+    #[cfg(target_arch = "riscv64")]
+    {
+        return Err(
+            "RISC-V VM snapshot/restore is unavailable because vAIA state migration is not implemented"
+                .to_string(),
+        );
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum HypStatus {
     Init,
@@ -79,13 +93,17 @@ impl CubeHypervisor {
         cube_hypervisor::set_runtime_seccomp_rules(vec![
             #[cfg(target_arch = "x86_64")]
             (libc::SYS_mkdir, vec![]),
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             (libc::SYS_mkdirat, vec![]),
             (libc::SYS_getsockopt, vec![]),
             (libc::SYS_setsockopt, vec![]),
             (libc::SYS_faccessat2, vec![]),
         ]);
         let mut vmm_config = self.config.to_vmm_config();
+        #[cfg(target_arch = "riscv64")]
+        {
+            vmm_config.seccomp = seccompiler::SeccompAction::Allow;
+        }
         let (sender, receiver) = channel::<NotifyEvent>();
         let notifier = vmm_config::EventNotifyConfig { notifier: sender };
         vmm_config.event_notifier = Some(notifier);
@@ -146,6 +164,7 @@ impl CubeHypervisor {
         memory_vol_url: Option<String>,
         snapshot_type: SnapshotType,
     ) -> CResult<()> {
+        ensure_snapshot_supported()?;
         let ch = self.ch.as_ref().unwrap().lock().await;
         let snap_config = Arc::new(SnapshotConfig {
             destination_url: path.to_string(),
@@ -182,6 +201,7 @@ impl CubeHypervisor {
     }
 
     pub async fn restore_vm(&self, config: config::RestoreConfig) -> CResult<()> {
+        ensure_snapshot_supported()?;
         let ch = self.ch.as_ref().unwrap().lock().await;
         let mut stat = self.new_stat(stat_defer::CALLEE_ACT_RESTORE_VM.to_string());
         let restore_config = Arc::new(config);
@@ -313,6 +333,7 @@ impl CubeHypervisor {
         memory_vol_url: Option<String>,
         snapshot_type: SnapshotType,
     ) -> CResult<()> {
+        ensure_snapshot_supported()?;
         let snap_config = Arc::new(SnapshotConfig {
             destination_url: destination_url.to_string(),
             snapshot_type,
@@ -329,6 +350,7 @@ impl CubeHypervisor {
     }
 
     pub async fn resume_vm_cube(&self, path: &str) -> CResult<()> {
+        ensure_snapshot_supported()?;
         let restore_config = Arc::new(RestoreConfig {
             source_url: path.into(),
             ..Default::default()
@@ -343,6 +365,7 @@ impl CubeHypervisor {
     }
 
     pub async fn resume_vm_cube_with_config(&self, config: RestoreConfig) -> CResult<()> {
+        ensure_snapshot_supported()?;
         let restore_config = Arc::new(config);
         let ch = self.ch.as_ref().unwrap().lock().await;
         let _ = ch

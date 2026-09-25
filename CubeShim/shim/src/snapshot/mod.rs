@@ -18,6 +18,7 @@ use crate::sandbox::pmem::{Pmem, HYP_AGENT_ID, HYP_OS_IMAGE_ID};
 use cube_hypervisor;
 use cube_hypervisor::config::BackendFsConfig;
 
+#[cfg(not(target_arch = "riscv64"))]
 use cube_hypervisor::vmm_config;
 use cube_hypervisor::ApiRequest;
 use cube_hypervisor::SnapshotConfig;
@@ -28,7 +29,9 @@ use hyper::client;
 use hyper_util::rt::TokioIo;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+#[cfg(not(target_arch = "riscv64"))]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -98,6 +101,15 @@ impl Snapshot {
         Snapshot::default()
     }
 
+    #[cfg(target_arch = "riscv64")]
+    pub(self) async fn handle(&mut self) -> CResult<()> {
+        Err(
+            "RISC-V VM snapshot creation is unavailable because vAIA state migration is not implemented"
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
     pub(self) async fn handle(&mut self) -> CResult<()> {
         self.check_path()?;
 
@@ -228,12 +240,21 @@ impl Snapshot {
         Ok(body_bytes)
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn launch_vmm(&mut self) -> CResult<()> {
+        Err(
+            "RISC-V VM snapshot creation is unavailable because vAIA state migration is not implemented"
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
     fn launch_vmm(&mut self) -> CResult<()> {
         //launch
         cube_hypervisor::set_runtime_seccomp_rules(vec![
             #[cfg(target_arch = "x86_64")]
             (libc::SYS_mkdir, vec![]),
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
             (libc::SYS_mkdirat, vec![]),
             (libc::SYS_getsockopt, vec![]),
             (libc::SYS_setsockopt, vec![]),

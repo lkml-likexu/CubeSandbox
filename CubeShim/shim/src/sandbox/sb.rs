@@ -796,8 +796,11 @@ impl SandBox {
         } else {
             vc.add_cmdline("quiet".to_string());
         }
-        vc.add_cmdline("highres=off".to_string());
-        vc.add_cmdline("clocksource=kvm-clock".to_string());
+        #[cfg(target_arch = "x86_64")]
+        {
+            vc.add_cmdline("highres=off".to_string());
+            vc.add_cmdline("clocksource=kvm-clock".to_string());
+        }
         vc.add_cmdline("agent.unified_cgroup_hierarchy=true".to_string());
 
         // Add externally passed pmem
@@ -868,18 +871,29 @@ impl SandBox {
     }
 
     fn by_snapshot(&self) -> bool {
+        #[cfg(target_arch = "riscv64")]
+        {
+            return false;
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
         let anno = self.spec.annotations().as_ref().unwrap();
+        #[cfg(not(target_arch = "riscv64"))]
         if anno.contains_key(config::ANNO_SNAPSHOT_DISABLE) {
             return false;
         }
 
+        #[cfg(not(target_arch = "riscv64"))]
         if let Some(proc) = self.spec.process() {
             if proc.selinux_label().is_some() && !proc.selinux_label().clone().unwrap().is_empty() {
                 return false;
             }
         }
 
-        !self.conf.app_snapshot_create
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            !self.conf.app_snapshot_create
+        }
     }
     async fn start_vm(&mut self) -> CResult<bool> {
         infof!(self.log, "start vm start");
@@ -905,6 +919,12 @@ impl SandBox {
                 }
             }
         } else if self.conf.app_snapshot_restore {
+            #[cfg(target_arch = "riscv64")]
+            return Err(
+                "app snapshot restore is unavailable on riscv64 because vAIA state migration is not implemented"
+                    .to_string(),
+            );
+            #[cfg(not(target_arch = "riscv64"))]
             return Err(
                 "app snapshot restore requested but snapshot is unavailable on this node \
                  (cube.snapshot.disable set or selinux label set)"
