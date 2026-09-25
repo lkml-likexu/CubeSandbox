@@ -176,7 +176,7 @@ func (h *WarehouseHandler) DeleteVersion(c *gin.Context) {
 	}
 	arch, err := warehouse.NormalizeArch(c.Query("arch"))
 	if err != nil {
-		httputil.WriteError(c, http.StatusBadRequest, "arch query is required (amd64 or arm64)")
+		httputil.WriteError(c, http.StatusBadRequest, "arch query is required (amd64, arm64, or riscv64)")
 		return
 	}
 	if !h.requireEnabled(c) {

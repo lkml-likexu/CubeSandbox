@@ -19,6 +19,31 @@ func testWH() *WarehouseHandler {
 	return NewWarehouseHandler(nil, warehouse.NewMemBlobStore(), nil, nil, 0, 0)
 }
 
+func TestNormalizeArchList(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeArchList([]string{"x86_64", " amd64 ", " RISCV64 ", "riscv64", "aarch64"})
+	if err != nil {
+		t.Fatalf("normalizeArchList: %v", err)
+	}
+	want := []string{warehouse.ArchAMD64, warehouse.ArchRISCV64, warehouse.ArchARM64}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeArchList() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("normalizeArchList()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	if _, err := normalizeArchList(nil); err == nil {
+		t.Error("normalizeArchList(nil) succeeded, want error")
+	}
+	if _, err := normalizeArchList([]string{"riscv64", "mips64"}); err == nil {
+		t.Error("normalizeArchList with invalid member succeeded, want error")
+	}
+}
+
 func TestWarehouseInternalBlob_BadArch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := testWH()

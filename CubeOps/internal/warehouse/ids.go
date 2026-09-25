@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	ArchAMD64 = "amd64"
-	ArchARM64 = "arm64"
+	ArchAMD64   = "amd64"
+	ArchARM64   = "arm64"
+	ArchRISCV64 = "riscv64"
 
 	ComponentShim   = "cube-shim"
 	ComponentKernel = "cube-kernel-scf"
@@ -33,8 +34,10 @@ func NormalizeArch(arch string) (string, error) {
 		return ArchAMD64, nil
 	case ArchARM64, "aarch64":
 		return ArchARM64, nil
+	case ArchRISCV64:
+		return ArchRISCV64, nil
 	default:
-		return "", fmt.Errorf("unsupported arch %q (want amd64 or arm64)", arch)
+		return "", fmt.Errorf("unsupported arch %q (want amd64, arm64, or riscv64)", arch)
 	}
 }
 
