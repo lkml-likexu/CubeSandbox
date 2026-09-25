@@ -4,8 +4,8 @@
 #
 # Build a guest kernel image from an external kernel source tree.
 #
-# It supports both native builds (x86_64 or aarch64) and cross builds
-# (x86_64 <-> aarch64). The build architecture is taken from
+# It supports native and cross builds for x86_64, aarch64, and riscv64.
+# The build architecture is taken from
 # KERNEL_TARGET_ARCH; the matching ARCH / CROSS_COMPILE values are derived
 # automatically (override CROSS_COMPILE via KERNEL_CROSS_COMPILE).
 #
@@ -16,7 +16,7 @@
 #   KERNEL_CONFIG       Path to the kernel .config to build with.
 #   KERNEL_OUTPUT_DIR   Out-of-tree build directory; image is written here.
 # Optional environment:
-#   KERNEL_TARGET_ARCH  x86_64 | aarch64 (default: host arch).
+#   KERNEL_TARGET_ARCH  x86_64 | aarch64 | riscv64 (default: host arch).
 #   KERNEL_CROSS_COMPILE  Cross-compiler prefix override (default: auto).
 #   KERNEL_BUILD_JOBS   Parallel jobs (default: 4).
 
@@ -42,7 +42,8 @@ host_arch="$(uname -m | sed 's/^arm64$/aarch64/')"
 case "${KERNEL_TARGET_ARCH}" in
   x86_64)  kbuild_arch=x86;   cross_triple=x86_64-linux-gnu ; KERNEL_IMAGE_TARGET=vmlinux ;;
   aarch64) kbuild_arch=arm64; cross_triple=aarch64-linux-gnu ; KERNEL_IMAGE_TARGET=Image ;;
-  *) err "unsupported KERNEL_TARGET_ARCH '${KERNEL_TARGET_ARCH}' (expected x86_64 or aarch64)" ;;
+  riscv64) kbuild_arch=riscv; cross_triple=riscv64-linux-gnu ; KERNEL_IMAGE_TARGET=Image ;;
+  *) err "unsupported KERNEL_TARGET_ARCH '${KERNEL_TARGET_ARCH}' (expected x86_64, aarch64, or riscv64)" ;;
 esac
 
 cross_compile="${KERNEL_CROSS_COMPILE}"
@@ -71,6 +72,11 @@ make -C "${KERNEL_SRC_DIR}" O="${KERNEL_OUTPUT_DIR}" \
 
 [ -f "${KERNEL_OUTPUT_DIR}/vmlinux" ] || err "build did not produce ${KERNEL_OUTPUT_DIR}/vmlinux"
 
-# Copy image for aarch64 to destination as vmlinux for deploy scripts to consume
-[ "$KERNEL_TARGET_ARCH" = "aarch64" ] && [ -f "${KERNEL_OUTPUT_DIR}/arch/arm64/boot/Image" ] && cp ${KERNEL_OUTPUT_DIR}/arch/arm64/boot/Image ${KERNEL_OUTPUT_DIR}/vmlinux
+# Normalize raw Image targets to the deploy scripts' vmlinux output name.
+case "${KERNEL_TARGET_ARCH}" in
+  aarch64) image_path="${KERNEL_OUTPUT_DIR}/arch/arm64/boot/Image" ;;
+  riscv64) image_path="${KERNEL_OUTPUT_DIR}/arch/riscv/boot/Image" ;;
+  *) image_path= ;;
+esac
+[ -z "${image_path}" ] || { [ -f "${image_path}" ] && cp "${image_path}" "${KERNEL_OUTPUT_DIR}/vmlinux"; }
 echo "[kernel] done: ${KERNEL_OUTPUT_DIR}/vmlinux"
