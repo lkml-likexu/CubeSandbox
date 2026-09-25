@@ -33,6 +33,13 @@ got="$(S3LVOL_HOST_MACHINE=aarch64 "${SETUP}" --print-configure-args)"
 [[ "${got}" == *"--target-arch=armv8.2-a+crypto"* ]] \
 	|| fail "aarch64 configure args must pin armv8.2-a+crypto (got ${got})"
 
+got="$(S3LVOL_HOST_MACHINE=riscv64 "${SETUP}" --print-target-arch)"
+[[ "${got}" == "rv64gc" ]] || fail "riscv64 default arch (got ${got})"
+
+got="$(S3LVOL_HOST_MACHINE=riscv64 "${SETUP}" --print-configure-args)"
+[[ "${got}" == *"--target-arch=rv64gc"* ]] \
+	|| fail "riscv64 configure args must pin rv64gc (got ${got})"
+
 got="$(SPDK_TARGET_ARCH=native S3LVOL_HOST_MACHINE=x86_64 \
 	"${SETUP}" --print-configure-args)"
 [[ "${got}" == *"--target-arch=native"* ]] \

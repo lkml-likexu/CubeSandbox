@@ -90,6 +90,7 @@ s3lvol_default_spdk_target_arch() {
 	case "$(s3lvol_host_machine)" in
 	x86_64|amd64) printf 'haswell\n' ;;
 	aarch64|arm64) printf 'armv8.2-a+crypto\n' ;;
+	riscv64) printf 'rv64gc\n' ;;
 	*) printf 'native\n' ;;
 	esac
 }
