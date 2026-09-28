@@ -325,9 +325,63 @@ else
 fi
 EOF
 chmod +x "$TMP_DIR/bin/cp"
+
+BUNDLE_SOURCE="$TMP_DIR/CubeSandbox-source"
+mkdir -p "$BUNDLE_SOURCE/hypervisor/scripts"
+/bin/cp "$SCRIPT_DIR/dev_cli.sh" "$BUNDLE_SOURCE/hypervisor/scripts/dev_cli.sh"
+/bin/cp "$SCRIPT_DIR/../Cargo.toml" "$BUNDLE_SOURCE/hypervisor/Cargo.toml"
+/bin/cp "$SCRIPT_DIR/../.gitignore" "$BUNDLE_SOURCE/hypervisor/.gitignore"
+printf 'first commit\n' > "$BUNDLE_SOURCE/source-marker"
+git -C "$BUNDLE_SOURCE" init -q
+git -C "$BUNDLE_SOURCE" config user.name 'Offline Bundle Test'
+git -C "$BUNDLE_SOURCE" config user.email 'offline-bundle@example.invalid'
+git -C "$BUNDLE_SOURCE" add .
+git -C "$BUNDLE_SOURCE" commit -qm 'initial source'
+FIRST_SOURCE_COMMIT=$(git -C "$BUNDLE_SOURCE" rev-parse HEAD)
+printf 'current commit\n' > "$BUNDLE_SOURCE/source-marker"
+git -C "$BUNDLE_SOURCE" add source-marker
+git -C "$BUNDLE_SOURCE" commit -qm 'update source'
+SOURCE_COMMIT=$(git -C "$BUNDLE_SOURCE" rev-parse HEAD)
+
+printf 'dirty\n' >> "$BUNDLE_SOURCE/source-marker"
+: > "$DOCKER_LOG"
+if CUBESANDBOX_DIR="$BUNDLE_SOURCE" HOME="$TMP_DIR/home" \
+    DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/dirty-source.out" 2>&1; then
+    echo "bundle preparation unexpectedly accepted tracked source changes" >&2
+    exit 1
+fi
+grep -q 'source must be a clean committed Git worktree' "$TMP_DIR/dirty-source.out"
+test ! -s "$DOCKER_LOG"
+git -C "$BUNDLE_SOURCE" checkout -q -- source-marker
+printf 'staged\n' >> "$BUNDLE_SOURCE/source-marker"
+git -C "$BUNDLE_SOURCE" add source-marker
+if CUBESANDBOX_DIR="$BUNDLE_SOURCE" HOME="$TMP_DIR/home" \
+    DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/staged-source.out" 2>&1; then
+    echo "bundle preparation unexpectedly accepted staged source changes" >&2
+    exit 1
+fi
+grep -q 'source must be a clean committed Git worktree' "$TMP_DIR/staged-source.out"
+test ! -s "$DOCKER_LOG"
+git -C "$BUNDLE_SOURCE" reset -q --hard HEAD
+printf 'untracked\n' > "$BUNDLE_SOURCE/untracked-source"
+if CUBESANDBOX_DIR="$BUNDLE_SOURCE" HOME="$TMP_DIR/home" \
+    DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/untracked-source.out" 2>&1; then
+    echo "bundle preparation unexpectedly accepted untracked source files" >&2
+    exit 1
+fi
+grep -q 'source must be a clean committed Git worktree' "$TMP_DIR/untracked-source.out"
+test ! -s "$DOCKER_LOG"
+rm "$BUNDLE_SOURCE/untracked-source"
+mkdir -p "$BUNDLE_SOURCE/hypervisor/build"
+printf ignored > "$BUNDLE_SOURCE/hypervisor/build/ignored-cache"
+
 (
     cd "$TMP_DIR"
     CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:bundle \
+        CUBESANDBOX_DIR="$BUNDLE_SOURCE" \
         HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
@@ -358,11 +412,14 @@ test -f "$TMP_DIR/home/workloads/bionic-server-cloudimg-amd64.raw"
 test -f "$TMP_DIR/home/workloads/alpine_initramfs.img"
 test -f "$TMP_DIR/home/workloads/vfio/focal-server-cloudimg-amd64-custom-20210609-0.raw"
 grep -q '^./CubeSandbox/hypervisor/scripts/dev_cli.sh$' "$TMP_DIR/bundle.list"
+grep -q '^./CubeSandbox/source-marker$' "$TMP_DIR/bundle.list"
+grep -q '^./CubeSandbox/.git/$' "$TMP_DIR/bundle.list"
+grep -q '^./CubeSandbox/.git/shallow$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_registry/placeholder$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_git_registry/placeholder$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_target/placeholder$' "$TMP_DIR/bundle.list"
-if grep -Eq '^\./CubeSandbox/(.*/)?\.git(/|$)' "$TMP_DIR/bundle.list"; then
-    echo "bundle unexpectedly contains Git metadata" >&2
+if grep -q '^./CubeSandbox/hypervisor/build/ignored-cache$' "$TMP_DIR/bundle.list"; then
+    echo "bundle unexpectedly copied ignored source-tree build output" >&2
     exit 1
 fi
 if grep -q '^./CubeSandbox/CubeSandbox/' "$TMP_DIR/bundle.list"; then
@@ -373,12 +430,28 @@ if grep -q '\.dev_cli\.log\.txt$' "$TMP_DIR/bundle.list"; then
     echo "bundle unexpectedly contains a dev CLI log" >&2
     exit 1
 fi
-tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_commit='
-tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_dirty=true$'
+test "$(tar -xOf "$BUNDLE" ./CubeSandbox/source-marker)" = 'current commit'
+test "$(tar -xOf "$BUNDLE" ./MANIFEST | grep '^source_commit=' | cut -d= -f2-)" = "$SOURCE_COMMIT"
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_dirty=false$'
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_clone_method=git-clone$'
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_clone_depth=1$'
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_shallow=true$'
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^container_image=registry.internal/cloud-hypervisor/dev:bundle$'
 mkdir "$TMP_DIR/extracted"
 tar -xzf "$BUNDLE" -C "$TMP_DIR/extracted"
-(cd "$TMP_DIR/extracted" && sha256sum --check SHA256SUMS >/dev/null)
+(
+    cd "$TMP_DIR/extracted"
+    sha256sum --check SHA256SUMS >/dev/null
+    test "$(git -C CubeSandbox rev-parse --is-shallow-repository)" = true
+    test "$(git -C CubeSandbox rev-list --count HEAD)" = 1
+    test "$(git -C CubeSandbox rev-parse HEAD)" = "$SOURCE_COMMIT"
+    test "$(git -C CubeSandbox remote)" = ""
+    test -z "$(git -C CubeSandbox status --porcelain --untracked-files=all)"
+    if git -C CubeSandbox cat-file -e "$FIRST_SOURCE_COMMIT^{commit}" 2>/dev/null; then
+        echo "depth-1 source clone unexpectedly contains the previous commit" >&2
+        exit 1
+    fi
+)
 grep -q 'chown -R .* /cloud-hypervisor /root/workloads' "$DOCKER_LOG"
 
 CUSTOM_ARTIFACTS="$TMP_DIR/custom-artifacts"
@@ -393,7 +466,8 @@ printf stale > "$TMP_DIR/home/workloads/jammy-server-cloudimg-amd64-custom-20220
 printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
 (
     cd "$CUSTOM_BUNDLE_OUTPUT"
-    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    CUBESANDBOX_DIR="$BUNDLE_SOURCE" \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         CH_X86_HYPERVISOR_FW_FILE="$CUSTOM_ARTIFACTS/hypervisor-fw" \
         CH_X86_CLOUDHV_FD_FILE="$CUSTOM_ARTIFACTS/CLOUDHV.fd" \
         CH_X86_BIONIC_QCOW2_FILE="$CUSTOM_ARTIFACTS/bionic.qcow2" \
@@ -414,7 +488,8 @@ test ! -f "$TMP_DIR/home/workloads/focal-server-cloudimg-amd64-custom-20210609-0
 test ! -f "$TMP_DIR/home/workloads/jammy-server-cloudimg-amd64-custom-20220329-0.raw"
 test ! -f "$TMP_DIR/home/workloads/alpine_initramfs.img"
 
-if HOME="$TMP_DIR/home" CH_X86_VMLINUX_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+if CUBESANDBOX_DIR="$BUNDLE_SOURCE" HOME="$TMP_DIR/home" \
+    CH_X86_VMLINUX_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/artifact-path.out" 2>&1; then
     echo "relative custom artifact unexpectedly succeeded" >&2
     exit 1
@@ -439,7 +514,8 @@ grep -q 'CH_WORKLOADS_DIR must be an absolute path' "$TMP_DIR/path.out"
 : > "$DOCKER_LOG"
 (
     cd "$TMP_DIR"
-    MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    MOCK_ARCH=aarch64 CUBESANDBOX_DIR="$BUNDLE_SOURCE" \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle
 )
 ARM_BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-aarch64.tgz' -print -quit)
@@ -461,7 +537,8 @@ printf stale > "$TMP_DIR/home/workloads/focal-server-cloudimg-arm64-custom-20210
 printf stale > "$TMP_DIR/home/workloads/alpine_initramfs.img"
 (
     cd "$ARM_CUSTOM_OUTPUT"
-    MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    MOCK_ARCH=aarch64 CUBESANDBOX_DIR="$BUNDLE_SOURCE" \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
         CH_BIONIC_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/bionic-arm64.qcow2" \
         CH_FOCAL_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/focal-arm64.qcow2" \
         CH_JAMMY_ARM64_QCOW2_FILE="$CUSTOM_ARTIFACTS/jammy-arm64.qcow2" \
@@ -483,7 +560,8 @@ if grep -Eq '^\./workloads/(.*/)?[^/]*-server-cloudimg-.*\.(img|raw)$|^\./worklo
     exit 1
 fi
 
-if MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" CH_BIONIC_ARM64_QCOW2_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+if MOCK_ARCH=aarch64 CUBESANDBOX_DIR="$BUNDLE_SOURCE" HOME="$TMP_DIR/home" \
+    CH_BIONIC_ARM64_QCOW2_FILE=relative DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" --prepare-offline-bundle >"$TMP_DIR/arm-artifact-path.out" 2>&1; then
     echo "relative ARM custom artifact unexpectedly succeeded" >&2
     exit 1

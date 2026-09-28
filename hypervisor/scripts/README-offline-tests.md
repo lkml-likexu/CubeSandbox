@@ -14,7 +14,7 @@
 - x86_64 或 aarch64 Linux；
 - Docker 可用；
 - Bundle 必须在与离线测试机相同架构的联网物理机上生成；
-- Bundle 构建时的当前 CubeSandbox 工作树会随归档传输，无需在离线机另行检出源码；
+- CubeSandbox 源仓库必须是 clean、已提交的 Git 工作树；当前 HEAD 会以 depth-1 浅克隆随归档传输，无需在离线机另行检出源码；
 - 足够的磁盘空间；
 - 执行实际集成测试时可访问 `/dev/kvm`，并允许特权容器、hugepages、KSM、网络及临时挂载相关操作。
 
@@ -178,14 +178,17 @@ CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:20240507-0 \
   ./hypervisor/scripts/dev_cli.sh --prepare-offline-bundle
 ```
 
+该命令要求 CubeSandbox 源仓库没有 staged、tracked 或未忽略的 untracked 变更。若检查失败，请先 commit、stash 或清理相关文件；Git ignored 的 Cargo 缓存及编译产物不受此限制。
+
 该命令会：
 
-1. 获取或确认开发容器镜像；
-2. 下载 integration 和 live migration 所需 workloads；
-3. 转换磁盘镜像并生成测试辅助文件；
-4. 编译 release 二进制及测试二进制，但不执行测试；
-5. 收集当前 CubeSandbox 工作树、workloads、Cargo 缓存和编译产物；
-6. 记录 OCI 镜像引用，并在当前目录生成与本机架构匹配的归档：
+1. 验证当前 CubeSandbox HEAD 和工作树状态；
+2. 获取或确认开发容器镜像；
+3. 下载 integration 和 live migration 所需 workloads；
+4. 转换磁盘镜像并生成测试辅助文件；
+5. 编译 release 二进制及测试二进制，但不执行测试；
+6. 通过 `git clone --depth 1 --no-local` 克隆当前 HEAD，并收集 workloads、Cargo 缓存和编译产物；
+7. 记录 OCI 镜像引用，并在当前目录生成与本机架构匹配的归档：
 
 ```text
 cloud-hypervisor-offline-<short-commit>-x86_64.tgz
@@ -207,7 +210,8 @@ Bundle 包含：
 MANIFEST
 SHA256SUMS
 workloads/
-CubeSandbox/                      # 当前已跟踪及未忽略的未跟踪源码
+CubeSandbox/                      # 当前已提交 HEAD 的 depth-1 clone
+CubeSandbox/.git/                # 保留 shallow Git 元数据
 CubeSandbox/hypervisor/build/cargo_registry/
 CubeSandbox/hypervisor/build/cargo_git_registry/
 CubeSandbox/hypervisor/build/cargo_target/
@@ -216,7 +220,9 @@ CubeSandbox/hypervisor/target/    # 存在时包含
 
 Bundle 只保留可传输的规范输入：Alpine 仅保留 `alpine-minirootfs-*.tar.gz`，Bionic、Focal 和 Jammy 仅保留 qcow2。`alpine_initramfs.img`、解压目录、raw/img 镜像、ARM update-kernel raw 及 `vfio/` 副本不会进入 Bundle；离线测试启动时会从 tar.gz/qcow2 在本地重新生成这些运行时文件。raw 文件仍用于测试隔离副本、VFIO 嵌套虚机和 ARM 内核注入，但无需重复传输。
 
-`MANIFEST` 记录源码提交、工作树是否有未提交修改、架构、创建时间、容器镜像、自定义 x86/aarch64 制品名及归档目录。源码通过 Git 的已跟踪文件和未忽略的未跟踪文件清单复制；任何层级的 `.git` 元数据、ignored 构建产物、`*.dev_cli.log.txt` 及旧 Bundle 不会进入归档，所需 Cargo 缓存会单独加入。
+源码只能通过本地 `git clone --depth 1 --no-local` 进入 Bundle。`--no-local` 禁用本地 clone 优化，确保 Git 不会忽略 `--depth`；构建过程还会验证 `.git/shallow`、shallow 状态、HEAD 及可达提交数。`CubeSandbox/.git` 会保留，但指向准备机路径的 `origin` 会移除；workloads 内嵌 `.git` 仍会清理。
+
+`MANIFEST` 记录 `source_commit`、固定为 `false` 的兼容字段 `source_dirty`、`source_clone_method=git-clone`、`source_clone_depth=1`、`source_shallow=true`，以及架构、创建时间、容器镜像、自定义 x86/aarch64 制品名和归档目录。源码仓库 ignored 构建产物不会由 clone 带入，所需 Cargo 缓存和 target 会通过专用流程单独加入。
 
 记录归档自身的校验值，以便传输后验证：
 
@@ -226,7 +232,7 @@ sha256sum cloud-hypervisor-offline-*-${ARCH}.tgz \
   > cloud-hypervisor-offline.sha256
 ```
 
-将 `.tgz` 和校验文件传输到离线测试机。Bundle 已包含生成时的当前源码工作树。
+将 `.tgz` 和校验文件传输到离线测试机。Bundle 已包含生成时 clean、已提交的当前源码 HEAD。
 
 ## 在离线机器恢复 Bundle
 
@@ -251,11 +257,21 @@ sha256sum --check SHA256SUMS
 ### 2. 检查架构与元数据
 
 ```bash
-grep -E '^(source_commit|source_dirty|architecture|container_image|custom_(x86|aarch64)_artifacts)=' MANIFEST
+grep -E '^(source_commit|source_dirty|source_clone_(method|depth)|source_shallow|architecture|container_image|custom_(x86|aarch64)_artifacts)=' MANIFEST
 test "$(grep '^architecture=' MANIFEST | cut -d= -f2-)" = "$(uname -m)"
+test "$(grep '^source_dirty=' MANIFEST | cut -d= -f2-)" = false
+test "$(grep '^source_clone_method=' MANIFEST | cut -d= -f2-)" = git-clone
+test "$(grep '^source_clone_depth=' MANIFEST | cut -d= -f2-)" -eq 1
+test "$(grep '^source_shallow=' MANIFEST | cut -d= -f2-)" = true
+test "$(git -C CubeSandbox rev-parse --is-shallow-repository)" = true
+test "$(git -C CubeSandbox rev-list --count HEAD)" -eq 1
+test "$(git -C CubeSandbox rev-parse HEAD)" = \
+  "$(grep '^source_commit=' MANIFEST | cut -d= -f2-)"
+test -z "$(git -C CubeSandbox status --porcelain --untracked-files=all)"
+test -z "$(git -C CubeSandbox remote)"
 ```
 
-`CubeSandbox/` 已包含生成 Bundle 时的当前工作树，包括已跟踪文件的未提交修改及未忽略的未跟踪源码。
+`CubeSandbox/` 是生成 Bundle 时当前已提交 HEAD 的 clean depth-1 clone，并保留 `.git`。该 clone 不携带指向准备机本地路径的 `origin`；若联网后需要继续开发，请自行添加 remote。
 
 ### 3. 准备开发镜像
 

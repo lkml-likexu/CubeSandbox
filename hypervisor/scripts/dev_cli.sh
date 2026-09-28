@@ -815,6 +815,20 @@ cleanup_offline_bundle() {
     [ -z "${OFFLINE_BUNDLE_TEMP:-}" ] || rm -f "$OFFLINE_BUNDLE_TEMP"
 }
 
+verify_offline_bundle_source() {
+    local expected_commit="$1"
+    local actual_commit source_status
+
+    actual_commit=$(git -C "$CUBESANDBOX_DIR" rev-parse HEAD) ||
+        die "Failed to identify the CubeSandbox source commit."
+    [ "$actual_commit" = "$expected_commit" ] ||
+        die "CubeSandbox HEAD changed while preparing the offline bundle."
+    source_status=$(git -C "$CUBESANDBOX_DIR" status --porcelain --untracked-files=all) ||
+        die "Failed to inspect the CubeSandbox source worktree."
+    [ -z "$source_status" ] ||
+        die "CubeSandbox source must be a clean committed Git worktree. Commit or stash tracked changes and remove untracked files before retrying."
+}
+
 prepare_offline_bundle() {
     local architecture
     architecture=$(uname -m)
@@ -825,6 +839,11 @@ prepare_offline_bundle() {
     [ "$CH_OFFLINE" = "false" ] || die "--prepare-offline-bundle requires network access."
 
     validate_network_options
+    validate_host_paths
+    local source_commit
+    source_commit=$(git -C "$CUBESANDBOX_DIR" rev-parse HEAD) ||
+        die "Failed to identify the CubeSandbox source commit."
+    verify_offline_bundle_source "$source_commit"
     ensure_build_dir
     if [ "$architecture" = "x86_64" ]; then
         prepare_custom_x86_artifacts
@@ -869,61 +888,75 @@ prepare_offline_bundle() {
         chown -R "$(id -u):$(id -g)" "$CTR_CLH_ROOT_DIR" "$CTR_CH_WORKLOADS_DIR" ||
         die "Failed to restore ownership of prepared offline dependencies."
 
-    local commit short_commit dirty created_at output
-    commit=$(git -C "$CLH_ROOT_DIR" rev-parse HEAD)
-    short_commit=$(git -C "$CLH_ROOT_DIR" rev-parse --short=12 HEAD)
-    dirty=false
-    [ -z "$(git -C "$CLH_ROOT_DIR" status --porcelain)" ] || dirty=true
+    verify_offline_bundle_source "$source_commit"
+
+    local short_commit created_at output
+    short_commit=${source_commit:0:12}
     created_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
     output="$PWD/cloud-hypervisor-offline-${short_commit}-${architecture}.tgz"
 
-    OFFLINE_BUNDLE_STAGE=$(mktemp -d)
+    OFFLINE_BUNDLE_STAGE=$(mktemp -d) ||
+        die "Failed to create the offline bundle staging directory."
     OFFLINE_BUNDLE_TEMP="${output}.tmp.$$"
     trap cleanup_offline_bundle EXIT
 
-    mkdir -p \
-        "$OFFLINE_BUNDLE_STAGE/workloads" \
-        "$OFFLINE_BUNDLE_STAGE/CubeSandbox/hypervisor/build"
+    mkdir -p "$OFFLINE_BUNDLE_STAGE/workloads" ||
+        die "Failed to create the offline bundle workload directory."
     cp -a "$CH_WORKLOADS_DIR/." "$OFFLINE_BUNDLE_STAGE/workloads/" ||
         die "Failed to stage workloads."
     prune_staged_workloads
 
-    local git_source_list="$OFFLINE_BUNDLE_STAGE/git-source-files"
-    local source_list="$OFFLINE_BUNDLE_STAGE/source-files"
-    local source_archive="$OFFLINE_BUNDLE_STAGE/source.tar"
-    git -C "$CUBESANDBOX_DIR" ls-files --cached --others --exclude-standard -z > "$git_source_list" ||
-        die "Failed to enumerate CubeSandbox source files."
-    while IFS= read -r -d '' source_file; do
-        [ -e "$CUBESANDBOX_DIR/$source_file" ] || [ -L "$CUBESANDBOX_DIR/$source_file" ] || continue
-        case "$source_file" in
-        .git | .git/* | */.git | */.git/* | CubeSandbox | CubeSandbox/* | MANIFEST | SHA256SUMS | workloads | workloads/* | docker/cloud-hypervisor-dev-image.tar | cloud-hypervisor-offline-*.tgz | cloud-hypervisor-offline-*.tgz.tmp.* | */cloud-hypervisor-offline-*.tgz | */cloud-hypervisor-offline-*.tgz.tmp.* | cloud-hypervisor-offline-*.tar.gz | cloud-hypervisor-offline-*.tar.gz.tmp.* | */cloud-hypervisor-offline-*.tar.gz | */cloud-hypervisor-offline-*.tar.gz.tmp.* | *.dev_cli.log.txt | */*.dev_cli.log.txt) continue ;;
-        esac
-        printf '%s\0' "$source_file"
-    done < "$git_source_list" > "$source_list" ||
-        die "Failed to filter CubeSandbox source files."
-    [ -s "$source_list" ] || die "CubeSandbox source file list is empty."
-    tar -C "$CUBESANDBOX_DIR" --null -T "$source_list" -cf "$source_archive" ||
-        die "Failed to archive CubeSandbox source files."
-    tar -C "$OFFLINE_BUNDLE_STAGE/CubeSandbox" -xf "$source_archive" ||
-        die "Failed to stage CubeSandbox source files."
-    rm -f "$git_source_list" "$source_list" "$source_archive" ||
-        die "Failed to clean temporary source archives."
+    local staged_source="$OFFLINE_BUNDLE_STAGE/CubeSandbox"
+    local staged_commit staged_shallow staged_commit_count staged_source_status
+    git clone --depth 1 --no-local --single-branch --no-tags \
+        "$CUBESANDBOX_DIR" "$staged_source" ||
+        die "Failed to create the depth-1 CubeSandbox source clone."
+    verify_offline_bundle_source "$source_commit"
+    staged_commit=$(git -C "$staged_source" rev-parse HEAD) ||
+        die "Failed to identify the offline bundle source clone commit."
+    [ "$staged_commit" = "$source_commit" ] ||
+        die "Offline bundle source clone does not match the requested commit."
+    staged_shallow=$(git -C "$staged_source" rev-parse --is-shallow-repository) ||
+        die "Failed to inspect the offline bundle source clone depth."
+    [ "$staged_shallow" = "true" ] ||
+        die "Offline bundle CubeSandbox source clone is not shallow."
+    [ -s "$staged_source/.git/shallow" ] ||
+        die "Offline bundle CubeSandbox source clone has no shallow boundary."
+    staged_commit_count=$(git -C "$staged_source" rev-list --count HEAD) ||
+        die "Failed to count commits in the offline bundle source clone."
+    [ "$staged_commit_count" = "1" ] ||
+        die "Offline bundle CubeSandbox source clone contains more than one commit."
+    staged_source_status=$(git -C "$staged_source" status --porcelain --untracked-files=all) ||
+        die "Failed to inspect the offline bundle CubeSandbox source clone."
+    [ -z "$staged_source_status" ] ||
+        die "Offline bundle CubeSandbox source clone is not clean."
+    git -C "$staged_source" remote remove origin ||
+        die "Failed to remove the local source remote from the offline bundle clone."
+    mkdir -p "$staged_source/hypervisor/build" ||
+        die "Failed to create the offline bundle cache directory."
 
     local cache_dir
     for cache_dir in cargo_registry cargo_git_registry cargo_target; do
         if [ -d "$CLH_BUILD_DIR/$cache_dir" ]; then
-            cp -a "$CLH_BUILD_DIR/$cache_dir" "$OFFLINE_BUNDLE_STAGE/CubeSandbox/hypervisor/build/" ||
+            cp -a "$CLH_BUILD_DIR/$cache_dir" "$staged_source/hypervisor/build/" ||
                 die "Failed to stage $cache_dir."
         fi
     done
     if [ -d "$CLH_ROOT_DIR/target" ]; then
-        cp -a "$CLH_ROOT_DIR/target" "$OFFLINE_BUNDLE_STAGE/CubeSandbox/hypervisor/" ||
+        cp -a "$CLH_ROOT_DIR/target" "$staged_source/hypervisor/" ||
             die "Failed to stage hypervisor target artifacts."
     fi
+    staged_source_status=$(git -C "$staged_source" status --porcelain --untracked-files=all) ||
+        die "Failed to inspect CubeSandbox source after staging offline artifacts."
+    [ -z "$staged_source_status" ] ||
+        die "Staged offline artifacts modified tracked CubeSandbox source files."
 
     cat > "$OFFLINE_BUNDLE_STAGE/MANIFEST" <<EOF
-source_commit=$commit
-source_dirty=$dirty
+source_commit=$source_commit
+source_dirty=false
+source_clone_method=git-clone
+source_clone_depth=1
+source_shallow=true
 architecture=$architecture
 created_at=$created_at
 container_image=$CTR_IMAGE

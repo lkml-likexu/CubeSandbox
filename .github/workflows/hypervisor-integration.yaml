@@ -44,6 +44,8 @@ jobs:
         run: hypervisor/scripts/prepare_vdpa.sh
       - name: Run unit tests
         run: hypervisor/scripts/dev_cli.sh tests --unit --libc ${{ matrix.libc }}
+      - name: Run offline configuration tests
+        run: bash hypervisor/scripts/test_offline_config.sh
       - name: Load openvswitch module
         run: sudo modprobe openvswitch
       - name: Run integration tests
