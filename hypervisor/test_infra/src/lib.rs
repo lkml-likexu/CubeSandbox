@@ -73,6 +73,23 @@ pub const DEFAULT_TCP_LISTENER_MESSAGE: &str = "booted";
 pub const DEFAULT_TCP_LISTENER_PORT: u16 = 8000;
 pub const DEFAULT_TCP_LISTENER_TIMEOUT: i32 = 120;
 
+fn is_pvm_environment_with(module_path: &Path, pvm_enabled: Option<&OsStr>) -> bool {
+    module_path.exists()
+        || pvm_enabled.is_some_and(|value| {
+            matches!(
+                value.to_string_lossy().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+}
+
+pub fn is_pvm_environment() -> bool {
+    is_pvm_environment_with(
+        Path::new("/sys/module/kvm_pvm"),
+        env::var_os("CUBE_PVM_ENABLE").as_deref(),
+    )
+}
+
 #[derive(Debug)]
 pub enum WaitForBootError {
     EpollWait(std::io::Error),
@@ -1765,6 +1782,51 @@ pub fn parse_ethr_latency_output(output: &[u8]) -> Result<Vec<f64>, Error> {
         );
         Error::EthrLogParse
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_pvm_environment_with;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn pvm_module_takes_precedence_over_disabled_marker() {
+        let temp_dir = vmm_sys_util::tempdir::TempDir::new().unwrap();
+        let module_path = temp_dir.as_path().join("kvm_pvm");
+        fs::create_dir(&module_path).unwrap();
+
+        assert!(is_pvm_environment_with(
+            &module_path,
+            Some(OsStr::new("false"))
+        ));
+    }
+
+    #[test]
+    fn enabled_marker_selects_pvm() {
+        let missing_module = Path::new("/path/that/does/not/exist");
+
+        for marker in ["1", "true", "TRUE", "yes", "YeS"] {
+            assert!(is_pvm_environment_with(
+                missing_module,
+                Some(OsStr::new(marker))
+            ));
+        }
+    }
+
+    #[test]
+    fn disabled_or_invalid_marker_selects_kvm() {
+        let missing_module = Path::new("/path/that/does/not/exist");
+
+        assert!(!is_pvm_environment_with(missing_module, None));
+        for marker in ["", "0", "false", "FALSE", "no", "invalid"] {
+            assert!(!is_pvm_environment_with(
+                missing_module,
+                Some(OsStr::new(marker))
+            ));
+        }
+    }
 }
 
 pub fn measure_virtio_net_latency(guest: &Guest, test_timeout: u32) -> Result<Vec<f64>, Error> {
