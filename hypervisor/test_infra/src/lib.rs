@@ -15,7 +15,7 @@ use std::os::unix::{
     io::{AsRawFd, FromRawFd},
     net::UnixStream,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -1490,11 +1490,25 @@ impl<'a> GuestCommand<'a> {
     }
 }
 
+fn clh_command_path(
+    cmd: &str,
+    target_dir: Option<&OsStr>,
+    build_target: Option<&OsStr>,
+) -> PathBuf {
+    PathBuf::from(target_dir.unwrap_or_else(|| OsStr::new("target")))
+        .join(build_target.unwrap_or_else(|| OsStr::new("x86_64-unknown-linux-gnu")))
+        .join("release")
+        .join(cmd)
+}
+
 pub fn clh_command(cmd: &str) -> String {
-    env::var("BUILD_TARGET").map_or(
-        format!("target/x86_64-unknown-linux-gnu/release/{}", cmd),
-        |target| format!("target/{}/release/{}", target, cmd),
+    clh_command_path(
+        cmd,
+        env::var_os("CARGO_TARGET_DIR").as_deref(),
+        env::var_os("BUILD_TARGET").as_deref(),
     )
+    .to_string_lossy()
+    .into_owned()
 }
 
 pub fn parse_iperf3_output(output: &[u8], sender: bool) -> Result<f64, Error> {
@@ -1786,10 +1800,39 @@ pub fn parse_ethr_latency_output(output: &[u8]) -> Result<Vec<f64>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_pvm_environment_with;
+    use super::{clh_command_path, is_pvm_environment_with};
     use std::ffi::OsStr;
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn clh_command_uses_custom_target_directory() {
+        assert_eq!(
+            clh_command_path(
+                "cube-hypervisor",
+                Some(OsStr::new("/cloud-hypervisor/build/cargo_target")),
+                Some(OsStr::new("aarch64-unknown-linux-gnu")),
+            ),
+            Path::new("/cloud-hypervisor/build/cargo_target")
+                .join("aarch64-unknown-linux-gnu/release/cube-hypervisor")
+        );
+        assert_eq!(
+            clh_command_path(
+                "ch-remote",
+                Some(OsStr::new("build/cargo_target")),
+                Some(OsStr::new("aarch64-unknown-linux-gnu")),
+            ),
+            Path::new("build/cargo_target").join("aarch64-unknown-linux-gnu/release/ch-remote")
+        );
+    }
+
+    #[test]
+    fn clh_command_uses_default_target_path() {
+        assert_eq!(
+            clh_command_path("vhost_user_net", None, None),
+            Path::new("target/x86_64-unknown-linux-gnu/release/vhost_user_net")
+        );
+    }
 
     #[test]
     fn pvm_module_takes_precedence_over_disabled_marker() {
