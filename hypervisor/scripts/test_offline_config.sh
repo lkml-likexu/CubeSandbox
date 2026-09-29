@@ -83,6 +83,7 @@ grep -q 'missing' "$TMP_DIR/offline.out"
 
 cat > "$TMP_DIR/bin/docker" <<'EOF'
 #!/bin/bash
+printf 'CUBE_PVM_ENABLE=%s\n' "${CUBE_PVM_ENABLE-<unset>}" >> "$DOCKER_LOG"
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 if [ "$1" = "save" ]; then
     shift
@@ -115,6 +116,37 @@ if grep -q '^pull ' "$DOCKER_LOG"; then
 fi
 grep -q -- '--env CH_OFFLINE=true' "$DOCKER_LOG"
 grep -q -- '--env CARGO_NET_OFFLINE=true' "$DOCKER_LOG"
+grep -q -- '--env CUBE_PVM_ENABLE' "$DOCKER_LOG"
+if grep -q -- '--env CUBE_PVM_ENABLE=' "$DOCKER_LOG"; then
+    echo "unset PVM marker unexpectedly received a value" >&2
+    exit 1
+fi
+
+: > "$DOCKER_LOG"
+CUBE_PVM_ENABLE=0 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
+grep -q '^CUBE_PVM_ENABLE=0$' "$DOCKER_LOG"
+grep -q -- '--env CUBE_PVM_ENABLE' "$DOCKER_LOG"
+if grep -q -- '--env CUBE_PVM_ENABLE=' "$DOCKER_LOG"; then
+    echo "PVM marker should use Docker pass-through semantics" >&2
+    exit 1
+fi
+
+: > "$DOCKER_LOG"
+CUBE_PVM_ENABLE=1 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration --offline
+grep -q '^CUBE_PVM_ENABLE=1$' "$DOCKER_LOG"
+grep -q -- '--env CUBE_PVM_ENABLE' "$DOCKER_LOG"
+if grep -q -- '--env CUBE_PVM_ENABLE=' "$DOCKER_LOG"; then
+    echo "PVM marker should use Docker pass-through semantics" >&2
+    exit 1
+fi
+
+if grep -q '#\[ignore = "PVM' "$SCRIPT_DIR/../tests/integration.rs"; then
+    echo "PVM-specific static test ignore remains" >&2
+    exit 1
+fi
+test "$(grep -c '#\[ignore = "See #' "$SCRIPT_DIR/../tests/integration.rs")" -eq 2
 
 : > "$DOCKER_LOG"
 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \

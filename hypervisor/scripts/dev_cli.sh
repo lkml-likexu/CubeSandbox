@@ -561,6 +561,7 @@ cmd_tests() {
             --env CH_OFFLINE="$CH_OFFLINE" \
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
             --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
+            --env CUBE_PVM_ENABLE \
             "$CTR_IMAGE" \
             ./scripts/run_integration_tests_"$(uname -m)".sh "$@" || fix_dir_perms $? || exit $?
     fi
@@ -647,6 +648,7 @@ cmd_tests() {
             --env CH_OFFLINE="$CH_OFFLINE" \
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
             --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
+            --env CUBE_PVM_ENABLE \
             "$CTR_IMAGE" \
             "./scripts/$live_migration_script" "${live_migration_args[@]}" || fix_dir_perms $? || exit $?
     fi
