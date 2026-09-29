@@ -1172,8 +1172,8 @@ fn test_boot_from_vhost_user_blk(
     handle_child_output(r, &output);
 }
 
+#[cfg(target_arch = "x86_64")]
 fn _test_native_virtio_fs(hotplug: bool, pci_segment: Option<u16>) {
-    #[cfg(target_arch = "x86_64")]
     let focal_image = FOCAL_IMAGE_NAME.to_string();
     let focal = UbuntuDiskConfig::new(focal_image);
     let guest = Guest::new(Box::new(focal));
@@ -1185,7 +1185,6 @@ fn _test_native_virtio_fs(hotplug: bool, pci_segment: Option<u16>) {
     let mut shared_dir = workload_path;
     shared_dir.push("shared_dir");
 
-    #[cfg(target_arch = "x86_64")]
     let kernel_path = direct_kernel_boot_path();
 
     let mut guest_command = GuestCommand::new(&guest);
@@ -3899,22 +3898,26 @@ mod common_parallel {
         handle_child_output(r, &output);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_native_virtio_fs() {
         _test_native_virtio_fs(false, None)
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_native_virtio_fs_hotplug() {
         _test_native_virtio_fs(true, None)
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     #[cfg(not(feature = "mshv"))]
     fn test_native_virtio_fs_multi_segment() {
         _test_native_virtio_fs(false, Some(15))
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     #[cfg(not(feature = "mshv"))]
     fn test_native_virtio_fs_multi_segment_hotplug() {
@@ -8375,6 +8378,7 @@ mod compatibility {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 mod vmm_instance {
     use crate::MIN_EXPECTED_MEMORY_KB;
     use std::fs::File;
