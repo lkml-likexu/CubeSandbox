@@ -195,6 +195,17 @@ CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration --test-threads 7 --offline
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --test-threads 7' "$DOCKER_LOG"
 
+: > "$DOCKER_LOG"
+CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration --offline
+grep -q 'run_integration_tests_live_migration.sh --hypervisor kvm --test-threads 3' "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration \
+    --test-threads 7 --offline
+grep -q 'run_integration_tests_live_migration.sh --hypervisor kvm --test-threads 7' "$DOCKER_LOG"
+
 if HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration --test-threads 0 >"$TMP_DIR/threads.out" 2>&1; then
     echo "zero test thread count unexpectedly succeeded" >&2
@@ -223,6 +234,67 @@ if load_custom_x86_artifacts >"$TMP_DIR/custom-marker.out" 2>&1; then
 fi
 grep -q 'Unknown custom x86 artifact: unknown-artifact' "$TMP_DIR/custom-marker.out"
 rm -f "$WORKLOADS_DIR/.custom_x86_artifacts"
+
+MIGRATION_HOME="$TMP_DIR/migration-home"
+MIGRATION_BIN="$TMP_DIR/migration-bin"
+MIGRATION_ROOT="$TMP_DIR/migration-root"
+mkdir -p \
+    "$MIGRATION_HOME/.cargo" \
+    "$MIGRATION_HOME/workloads" \
+    "$MIGRATION_BIN" \
+    "$MIGRATION_ROOT/scripts"
+/bin/cp "$SCRIPT_DIR/run_integration_tests_live_migration.sh" "$MIGRATION_ROOT/scripts/"
+/bin/cp "$SCRIPT_DIR/test-util.sh" "$MIGRATION_ROOT/scripts/"
+/bin/cp "$SCRIPT_DIR/sha1sums-x86_64" "$MIGRATION_ROOT/scripts/"
+: > "$MIGRATION_HOME/.cargo/env"
+printf qcow2 > "$MIGRATION_HOME/workloads/focal-server-cloudimg-amd64-custom-20210609-0.qcow2"
+printf raw > "$MIGRATION_HOME/workloads/focal-server-cloudimg-amd64-custom-20210609-0.raw"
+printf kernel > "$MIGRATION_HOME/workloads/vmlinux"
+printf '%s\n' focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
+    > "$MIGRATION_HOME/workloads/.custom_x86_artifacts"
+cat > "$MIGRATION_BIN/cargo" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$MIGRATION_CARGO_LOG"
+if [ "$1" = build ]; then
+    target="x86_64-unknown-linux-gnu"
+    mkdir -p "target/$target/release"
+    : > "target/$target/release/cube-hypervisor"
+    : > "target/$target/release/vhost_user_net"
+    : > "target/$target/release/ch-remote"
+fi
+EOF
+cat > "$MIGRATION_BIN/strip" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat > "$MIGRATION_BIN/sudo" <<'EOF'
+#!/bin/bash
+printf 'unexpected sudo: %s\n' "$*" >> "$MIGRATION_SUDO_LOG"
+exit 1
+EOF
+chmod +x "$MIGRATION_BIN"/*
+export MIGRATION_CARGO_LOG="$TMP_DIR/migration-cargo.log"
+export MIGRATION_SUDO_LOG="$TMP_DIR/migration-sudo.log"
+(
+    cd "$MIGRATION_ROOT"
+    PATH="$MIGRATION_BIN:$PATH" HOME="$MIGRATION_HOME" CH_LIBC=gnu \
+        ./scripts/run_integration_tests_live_migration.sh
+) > "$TMP_DIR/migration-default.out" 2>&1
+grep -q '^test live_migration_parallel:: -- --test-threads=4$' "$MIGRATION_CARGO_LOG"
+grep -q '^test live_migration_sequential:: -- --test-threads=1$' "$MIGRATION_CARGO_LOG"
+grep -q 'Running live migration parallel tests with 4 threads' "$TMP_DIR/migration-default.out"
+test ! -s "$MIGRATION_SUDO_LOG"
+
+: > "$MIGRATION_CARGO_LOG"
+(
+    cd "$MIGRATION_ROOT"
+    PATH="$MIGRATION_BIN:$PATH" HOME="$MIGRATION_HOME" CH_LIBC=gnu \
+        ./scripts/run_integration_tests_live_migration.sh --test-threads 2
+) > "$TMP_DIR/migration-override.out" 2>&1
+grep -q '^test live_migration_parallel:: -- --test-threads=2$' "$MIGRATION_CARGO_LOG"
+grep -q '^test live_migration_sequential:: -- --test-threads=1$' "$MIGRATION_CARGO_LOG"
+grep -q 'Running live migration parallel tests with 2 threads' "$TMP_DIR/migration-override.out"
+test ! -s "$MIGRATION_SUDO_LOG"
 
 mkdir -p "$TMP_DIR/arm-home/.cargo"
 : > "$TMP_DIR/arm-home/.cargo/env"

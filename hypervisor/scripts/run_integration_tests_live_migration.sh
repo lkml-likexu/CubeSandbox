@@ -80,17 +80,10 @@ if [ "$prepare_offline" = "true" ]; then
     exit 0
 fi
 
-# Test ovs-dpdk relies on hugepages
-echo 6144 | sudo tee /proc/sys/vm/nr_hugepages
-sudo chmod a+rwX /dev/hugepages
-
 export RUST_BACKTRACE=1
-parallel_test_args=()
-if [ -n "$test_threads" ]; then
-    parallel_test_args=(--test-threads="$test_threads")
-    echo "Running live migration parallel tests with $test_threads threads"
-fi
-time cargo test $features "live_migration_parallel::$test_filter" -- "${parallel_test_args[@]}" ${test_binary_args[*]}
+parallel_threads="${test_threads:-4}"
+echo "Running live migration parallel tests with $parallel_threads threads"
+time cargo test $features "live_migration_parallel::$test_filter" -- --test-threads="$parallel_threads" ${test_binary_args[*]}
 RES=$?
 
 # Run some tests in sequence since the result could be affected by other tests

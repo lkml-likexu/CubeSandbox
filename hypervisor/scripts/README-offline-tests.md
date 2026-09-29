@@ -332,7 +332,9 @@ export CH_WORKLOADS_DIR="$PWD/workloads"
   --offline
 ```
 
-也可通过 `CH_TEST_THREADS` 设置默认值；命令行 `--test-threads` 优先。未设置时保持原有默认策略。该值只影响 parallel 和 quick 的可并行分组，sequential、兼容性及 lib-mode 分组始终使用一个线程。
+也可通过 `CH_TEST_THREADS` 设置默认值；命令行 `--test-threads` 优先。x86 live migration 未显式设置时默认使用 4 个 parallel threads，sequential 分组始终使用一个线程。普通 x86 full integration 保持按 CPU 数量的一半派生默认值（至少为 1）；内存受限的机器应显式降低 `--test-threads`。x86 quick 模式的 Priority 1–3 使用所选并行度，snapshot/live-migration 及 lib-mode priority 固定为一个线程；普通 integration 的 sequential、兼容性及 lib-mode 分组也始终使用一个线程。
+
+x86 默认 live migration lane 中唯一依赖 OVS-DPDK hugepages 的用例目前均为 ignored，因此该 lane 不再预留 6144 个 hugepages；手工启用这些用例前需另行配置 OVS-DPDK 和 hugepages。普通 x86 integration 的 quick 和 full 模式都会请求配置 6144 个 hugepages。
 
 在 aarch64 上，普通 `--integration` 已包含 common、ACPI 和 live migration 测试；`--integration-live-migration` 只运行 ARM 的 parallel 与 sequential live migration 模块。
 
@@ -389,7 +391,7 @@ test -r /dev/kvm && test -w /dev/kvm
 
 ### 磁盘空间或 hugepages 不足
 
-Bundle、展开内容、Docker 镜像和测试生成文件会同时占用较大空间。完整测试还会配置 KSM 和 hugepages；请在专用测试机上预留足够内存和磁盘空间。
+Bundle、展开内容、Docker 镜像和测试生成文件会同时占用较大空间。完整测试会修改 workload/build 输出、KSM、网络及临时挂载状态；普通 integration 还会配置 hugepages。请在专用测试机上预留足够内存和磁盘空间。
 
 ## 回归验证
 
