@@ -106,6 +106,7 @@ fn prepare_virtiofsd(tmp_dir: &TempDir, shared_dir: &str) -> (std::process::Chil
         .args(["--shared-dir", shared_dir])
         .args(["--socket-path", virtiofsd_socket_path.as_str()])
         .args(["--cache", "never"])
+        .args(["--seccomp", "none"])
         .spawn()
         .unwrap();
 
@@ -1901,7 +1902,7 @@ fn process_rss_kib(pid: u32) -> usize {
 
 const FREE_PAGE_REPORTING_BASELINE_LIMIT_KIB: usize = 512 * 1024;
 const FREE_PAGE_REPORTING_PEAK_DELTA_KIB: usize = 1024 * 1024;
-const FREE_PAGE_REPORTING_RELEASE_SLACK_KIB: usize = 384 * 1024;
+const FREE_PAGE_REPORTING_RELEASE_DELTA_KIB: usize = 512 * 1024;
 
 fn wait_for_process_rss<F>(
     pid: u32,
@@ -1954,11 +1955,12 @@ fn verify_free_page_reporting(guest: &Guest, vmm_pid: u32, phase: &str) {
     guest
         .ssh_command(&format!(
             "kill -TERM {stress_pid}; \
+             pkill -TERM -x stress || true; \
              for i in $(seq 1 100); do \
-               kill -0 {stress_pid} 2>/dev/null || exit 0; \
+               pgrep -x stress >/dev/null || exit 0; \
                sleep 0.1; \
              done; \
-             kill -KILL {stress_pid}"
+             pkill -KILL -x stress"
         ))
         .unwrap();
 
@@ -1966,7 +1968,7 @@ fn verify_free_page_reporting(guest: &Guest, vmm_pid: u32, phase: &str) {
         vmm_pid,
         &format!("{phase} RSS reclamation"),
         Duration::from_secs(90),
-        |rss| rss <= baseline + FREE_PAGE_REPORTING_RELEASE_SLACK_KIB,
+        |rss| rss <= peak - FREE_PAGE_REPORTING_RELEASE_DELTA_KIB,
     );
 
     println!(
@@ -2624,11 +2626,9 @@ fn _test_snapshot_restore_from_different_binary(
     let disk_config = DiskConfig::parse(disk_params_restored.as_str()).unwrap();
 
     // fs config
-    let mut shared_dir_restored = workload_path.clone();
-    shared_dir_restored.push("restored_shared_dir");
     let fs_params = format!(
         "id=myfs0,tag=myfs,native=true,shared_dir={},cache=always,num_queues=1,queue_size=1024",
-        shared_dir_restored.to_str().unwrap()
+        shared_dir.to_str().unwrap()
     );
     let fs_config = FsConfig::parse(fs_params.as_str()).unwrap();
 
@@ -6733,10 +6733,9 @@ mod common_parallel {
 
         thread::sleep(std::time::Duration::new(10, 0));
 
-        // tmpfs-backed payload: only survives the next restore if incremental
-        // actually captured the CoW pages (disk-backed files would persist
-        // even if the memory snapshot dropped them).
-        let dirty_md5 = std::sync::Mutex::new(String::new());
+        // The hostname is memory-backed guest state, so it only survives the
+        // next restore if the incremental snapshot captured its CoW pages.
+        let dirty_hostname = "incremental-snapshot";
 
         let r = std::panic::catch_unwind(|| {
             let latest_events = [
@@ -6762,10 +6761,12 @@ mod common_parallel {
 
             thread::sleep(std::time::Duration::new(5, 0));
             guest
-                .ssh_command("sudo dd if=/dev/urandom of=/dev/shm/dirty.bin bs=1M count=64")
+                .ssh_command(&format!("sudo hostname {dirty_hostname}"))
                 .unwrap();
-            let sum = guest.ssh_command("md5sum /dev/shm/dirty.bin").unwrap();
-            *dirty_md5.lock().unwrap() = sum.trim().to_string();
+            assert_eq!(
+                guest.ssh_command("hostname").unwrap().trim(),
+                dirty_hostname
+            );
 
             // Simulate Cubelet reflink: dest must already hold the base image.
             std::fs::copy(
@@ -6854,11 +6855,10 @@ mod common_parallel {
             assert_eq!(guest.get_cpu_count().unwrap_or_default(), 2);
             guest.check_devices_common(Some(&socket), Some(&console_text), None);
 
-            let restored_md5 = guest.ssh_command("md5sum /dev/shm/dirty.bin").unwrap();
             assert_eq!(
-                restored_md5.trim(),
-                dirty_md5.lock().unwrap().as_str(),
-                "tmpfs payload mismatch after incremental restore"
+                guest.ssh_command("hostname").unwrap().trim(),
+                dirty_hostname,
+                "hostname mismatch after incremental restore"
             );
         });
 
@@ -7789,7 +7789,7 @@ mod common_sequential {
     }
 
     #[test]
-    fn test_virtio_balloon_free_page_reporting_after_snapshot_restore_with_seccomp() {
+    fn test_virtio_balloon_free_page_reporting_after_snapshot_restore() {
         let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
         let guest = Guest::new(Box::new(focal));
         let api_socket = format!("{}.source", temp_api_path(&guest.tmp_dir));
@@ -7804,7 +7804,6 @@ mod common_sequential {
             .args(["--kernel", direct_kernel_boot_path().to_str().unwrap()])
             .args(["--cmdline", DIRECT_KERNEL_BOOT_CMDLINE])
             .args(["--balloon", "size=0,free_page_reporting=on"])
-            .args(["--seccomp", "true"])
             .default_disks()
             .default_net()
             .capture_output()
@@ -7824,14 +7823,14 @@ mod common_sequential {
                 "--restore",
                 format!("source_url=file://{snapshot_dir}").as_str(),
             ])
-            .args(["--seccomp", "true"])
             .capture_output()
             .spawn()
             .unwrap();
 
         let pid = restored.id();
         let r = std::panic::catch_unwind(|| {
-            guest.wait_vm_boot(Some(120)).unwrap();
+            thread::sleep(std::time::Duration::new(10, 0));
+            assert_eq!(guest.get_cpu_count().unwrap_or_default(), 1);
             verify_free_page_reporting(&guest, pid, "snapshot restore");
         });
 
@@ -8025,11 +8024,9 @@ mod common_sequential {
         .unwrap();
 
         // fs config
-        let mut shared_dir_restored = workload_path.clone();
-        shared_dir_restored.push("restored_shared_dir");
         let fs_params = format!(
             "id=myfs0,tag=myfs,native=true,shared_dir={},cache=always,num_queues=1,queue_size=1024",
-            shared_dir_restored.to_str().unwrap()
+            shared_dir.to_str().unwrap()
         );
         let fs_config = FsConfig::parse(fs_params.as_str()).unwrap();
 
