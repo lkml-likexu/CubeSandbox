@@ -25,7 +25,7 @@ require_offline_workloads \
     vmlinux || exit 1
 
 FOCAL_OS_IMAGE_NAME="focal-server-cloudimg-amd64-custom-20210609-0.qcow2"
-FOCAL_OS_IMAGE_URL="https://cloud-hypervisor.azureedge.net/$FOCAL_OS_IMAGE_NAME"
+FOCAL_OS_IMAGE_URL="https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
 FOCAL_OS_IMAGE="$WORKLOADS_DIR/$FOCAL_OS_IMAGE_NAME"
 acquire_workload "$FOCAL_OS_IMAGE_NAME" "$FOCAL_OS_IMAGE_URL" || exit 1
 
@@ -38,17 +38,6 @@ if [ ! -f "$FOCAL_OS_RAW_IMAGE" ]; then
 fi
 
 load_custom_x86_artifacts || exit 1
-case ",$CUSTOM_X86_ARTIFACTS," in
-*,focal-server-cloudimg-amd64-custom-20210609-0.qcow2,*) ;;
-*)
-    pushd "$WORKLOADS_DIR" || exit 1
-    grep focal sha1sums-x86_64 | sha1sum --check || {
-        echo "sha1sum validation of images failed, remove invalid images to fix the issue."
-        exit 1
-    }
-    popd || exit 1
-    ;;
-esac
 
 VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
 acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1

@@ -152,7 +152,7 @@ update_workloads() {
             else
                 acquire_workload \
                     "$bionic_download_name" \
-                    "https://cloud-hypervisor.azureedge.net/$bionic_download_name" || return 1
+                    "https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-arm64.img" || return 1
                 time qemu-img convert -p -f qcow2 -O raw \
                     "$WORKLOADS_DIR/$bionic_download_name" \
                     "$WORKLOADS_DIR/$bionic_raw_name" || return 1
@@ -163,10 +163,10 @@ update_workloads() {
         fi
         acquire_workload \
             "$focal_qcow2_name" \
-            "https://cloud-hypervisor.azureedge.net/$focal_qcow2_name" || return 1
+            "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-arm64.img" || return 1
         acquire_workload \
             "$jammy_qcow2_name" \
-            "https://cloud-hypervisor.azureedge.net/$jammy_qcow2_name" || return 1
+            "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img" || return 1
         acquire_workload \
             "$alpine_name" \
             "http://dl-cdn.alpinelinux.org/alpine/v3.11/releases/aarch64/alpine-minirootfs-3.11.3-aarch64.tar.gz" || return 1

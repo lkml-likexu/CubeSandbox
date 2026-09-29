@@ -49,6 +49,30 @@ grep -q '^--quiet http://mirror.internal/workloads/kernel -O .*/kernel$' "$WGET_
 acquire_workload "kernel" "https://public.invalid/kernel"
 test ! -s "$WGET_LOG"
 
+unset WORKLOADS_BASE_URL
+: > "$WGET_LOG"
+acquire_workload \
+    "focal-server-cloudimg-amd64-custom-20210609-0.qcow2" \
+    "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img"
+grep -q '^--quiet https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img -O .*/focal-server-cloudimg-amd64-custom-20210609-0.qcow2$' "$WGET_LOG"
+
+while IFS='|' read -r image_script image_url; do
+    grep -q -F "$image_url" "$SCRIPT_DIR/$image_script"
+done <<'EOF'
+run_integration_tests_aarch64.sh|https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-arm64.img
+run_integration_tests_rate_limiter.sh|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img
+run_integration_tests_live_migration.sh|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img
+run_metrics.sh|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img
+run_metrics.sh|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-arm64.img
+run_integration_tests_aarch64.sh|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-arm64.img
+run_integration_tests_aarch64.sh|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img
+EOF
+old_image_host='cloud-hypervisor.azureedge'".net"
+if grep -R -q -F "$old_image_host" "$SCRIPT_DIR"; then
+    echo "obsolete image host remains in scripts" >&2
+    exit 1
+fi
+
 CH_OFFLINE=true
 if require_offline_workloads kernel missing >"$TMP_DIR/offline.out" 2>&1; then
     echo "offline preflight unexpectedly succeeded" >&2
