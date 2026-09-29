@@ -2259,6 +2259,17 @@ impl DeviceManager {
                 vhost_user_block as Arc<Mutex<dyn Migratable>>,
             )
         } else {
+            let disk_path = disk_cfg
+                .path
+                .as_ref()
+                .ok_or(DeviceManagerError::NoDiskPath)?;
+
+            // Detect the image type without O_DIRECT, whose alignment requirements
+            // vary by filesystem and also apply to the VHD footer offset.
+            let mut detection_file = File::open(disk_path).map_err(DeviceManagerError::Disk)?;
+            let image_type = detect_image_type(&mut detection_file)
+                .map_err(DeviceManagerError::DetectImageType)?;
+
             let mut options = OpenOptions::new();
             options.read(true);
             options.write(!disk_cfg.readonly);
@@ -2266,17 +2277,7 @@ impl DeviceManager {
                 options.custom_flags(libc::O_DIRECT);
             }
             // Open block device path
-            let mut file: File = options
-                .open(
-                    disk_cfg
-                        .path
-                        .as_ref()
-                        .ok_or(DeviceManagerError::NoDiskPath)?
-                        .clone(),
-                )
-                .map_err(DeviceManagerError::Disk)?;
-            let image_type =
-                detect_image_type(&mut file).map_err(DeviceManagerError::DetectImageType)?;
+            let file: File = options.open(disk_path).map_err(DeviceManagerError::Disk)?;
 
             let image = match image_type {
                 ImageType::FixedVhd => {
