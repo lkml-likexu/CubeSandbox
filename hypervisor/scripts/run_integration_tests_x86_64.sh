@@ -233,6 +233,11 @@ strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor"
 strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/vhost_user_net"
 strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote"
 
+# Upstream release binaries do not support the PVM guest kernel. Keep the
+# compatibility test runnable by using the locally built binary as its source.
+mkdir -p "$WORKLOADS_DIR/cube-release"
+cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$WORKLOADS_DIR/cube-release/cube-hypervisor" || exit 1
+
 # We always copy a fresh version of our binary for our L2 guest.
 cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$VFIO_DIR"
 cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote" "$VFIO_DIR"
