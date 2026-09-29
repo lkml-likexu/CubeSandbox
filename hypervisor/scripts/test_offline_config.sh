@@ -76,6 +76,11 @@ chmod +x "$TMP_DIR/bin/docker"
 
 export DOCKER_LOG="$TMP_DIR/docker.log"
 export TEST_TMP_DIR="$TMP_DIR"
+MOCK_DEVICE_ROOT="$TMP_DIR/dev"
+mkdir -p "$MOCK_DEVICE_ROOT"
+ln -s /dev/null "$MOCK_DEVICE_ROOT/kvm"
+ln -s /dev/null "$MOCK_DEVICE_ROOT/mshv"
+export _CH_TEST_DEVICE_ROOT="$MOCK_DEVICE_ROOT"
 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration --quick --offline
 
@@ -86,6 +91,82 @@ if grep -q '^pull ' "$DOCKER_LOG"; then
 fi
 grep -q -- '--env CH_OFFLINE=true' "$DOCKER_LOG"
 grep -q -- '--env CARGO_NET_OFFLINE=true' "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --hypervisor mshv --offline
+grep -q 'run_integration_tests_x86_64.sh --hypervisor mshv' "$DOCKER_LOG"
+
+KVM_ONLY_DEVICE_ROOT="$TMP_DIR/kvm-only-dev"
+mkdir -p "$KVM_ONLY_DEVICE_ROOT"
+ln -s /dev/null "$KVM_ONLY_DEVICE_ROOT/kvm"
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$KVM_ONLY_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration \
+    --hypervisor mshv --offline >"$TMP_DIR/missing-mshv.out" 2>&1
+grep -q 'selected mshv hypervisor requires /dev/mshv' "$TMP_DIR/missing-mshv.out"
+test ! -s "$DOCKER_LOG"
+
+MSHV_ONLY_DEVICE_ROOT="$TMP_DIR/mshv-only-dev"
+mkdir -p "$MSHV_ONLY_DEVICE_ROOT"
+ln -s /dev/null "$MSHV_ONLY_DEVICE_ROOT/mshv"
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$MSHV_ONLY_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --hypervisor mshv --offline
+grep -q 'run_integration_tests_x86_64.sh --hypervisor mshv' "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$MSHV_ONLY_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline \
+    >"$TMP_DIR/missing-kvm.out" 2>&1
+grep -q 'selected kvm hypervisor requires /dev/kvm' "$TMP_DIR/missing-kvm.out"
+test ! -s "$DOCKER_LOG"
+
+INVALID_DEVICE_ROOT="$TMP_DIR/invalid-dev"
+mkdir -p "$INVALID_DEVICE_ROOT"
+printf not-a-device > "$INVALID_DEVICE_ROOT/kvm"
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$INVALID_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline \
+    >"$TMP_DIR/invalid-device.out" 2>&1
+grep -q 'requires /dev/kvm to be a character device' "$TMP_DIR/invalid-device.out"
+test ! -s "$DOCKER_LOG"
+
+MISSING_DEVICE_ROOT="$TMP_DIR/missing-dev"
+mkdir -p "$MISSING_DEVICE_ROOT"
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$MISSING_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline \
+    >"$TMP_DIR/missing-device.out" 2>&1
+grep -q 'Skipping integration test lanes.*kvm.*requires /dev/kvm' "$TMP_DIR/missing-device.out"
+grep -q 'nested virtualization' "$TMP_DIR/missing-device.out"
+grep -q 'cannot provide a missing host device' "$TMP_DIR/missing-device.out"
+test ! -s "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$MISSING_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration --offline \
+    >"$TMP_DIR/missing-migration-device.out" 2>&1
+grep -q 'Skipping integration test lanes.*kvm.*requires /dev/kvm' "$TMP_DIR/missing-migration-device.out"
+test ! -s "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+_CH_TEST_DEVICE_ROOT="$MISSING_DEVICE_ROOT" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --integration-rate-limiter --offline \
+    >"$TMP_DIR/mixed-lanes.out" 2>&1
+grep -q 'Skipping integration test lanes' "$TMP_DIR/mixed-lanes.out"
+grep -q 'run_integration_tests_rate_limiter.sh' "$DOCKER_LOG"
+if grep -q 'run_integration_tests_x86_64.sh' "$DOCKER_LOG"; then
+    echo "missing-device integration lane unexpectedly ran" >&2
+    exit 1
+fi
 
 : > "$DOCKER_LOG"
 CH_DEV_IMAGE=registry.internal/cloud-hypervisor/dev:test \
@@ -120,6 +201,13 @@ if HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     exit 1
 fi
 grep -q 'Test thread count must be a positive integer: 0' "$TMP_DIR/threads.out"
+
+if HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --offline >"$TMP_DIR/no-test-type.out" 2>&1; then
+    echo "tests command without a test type unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -q 'No test type selected' "$TMP_DIR/no-test-type.out"
 
 test "$(WORKLOADS_BASE_URL= workload_url kernel https://public.invalid/kernel)" = "https://public.invalid/kernel"
 printf '%s\n' unknown-artifact > "$WORKLOADS_DIR/.custom_x86_artifacts"

@@ -230,6 +230,14 @@ validate_network_options() {
     fi
 }
 
+hypervisor_device_is_usable() {
+    local device="$1"
+    local device_root="${_CH_TEST_DEVICE_ROOT:-/dev}"
+    local checked_device="$device_root/$(basename "$device")"
+
+    [ -c "$checked_device" ]
+}
+
 process_volumes_args() {
     if [ -z "$arg_vols" ]; then
         return
@@ -410,6 +418,7 @@ cmd_tests() {
     integration_live_migration=false
     integration_rate_limiter=false
     metrics=false
+    skipped_hypervisor_lanes=false
     quick=false
     test_threads="$CH_TEST_THREADS"
     libc="gnu"
@@ -492,6 +501,26 @@ cmd_tests() {
     fi
 
     validate_network_options
+    if { [ "$integration" = true ] || [ "$integration_live_migration" = true ]; } &&
+        ! hypervisor_device_is_usable "$exported_device"; then
+        say_warn "Skipping integration test lanes: the selected $hypervisor hypervisor requires $exported_device to be a character device."
+        say_warn "Enable nested virtualization on the host when applicable; privileged containers and /dev:/dev cannot provide a missing host device."
+        integration=false
+        integration_live_migration=false
+        skipped_hypervisor_lanes=true
+    fi
+    if [ "$unit" = false ] &&
+        [ "$integration" = false ] &&
+        [ "$integration_sgx" = false ] &&
+        [ "$integration_vfio" = false ] &&
+        [ "$integration_windows" = false ] &&
+        [ "$integration_live_migration" = false ] &&
+        [ "$integration_rate_limiter" = false ] &&
+        [ "$metrics" = false ]; then
+        [ "$skipped_hypervisor_lanes" = true ] && return 0
+        die "No test type selected. Please use --help for help."
+    fi
+
     ensure_build_dir
     ensure_latest_ctr
 

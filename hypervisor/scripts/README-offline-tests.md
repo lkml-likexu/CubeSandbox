@@ -16,7 +16,13 @@
 - Bundle 必须在与离线测试机相同架构的联网物理机上生成；
 - CubeSandbox 源仓库必须是 clean、已提交的 Git 工作树；当前 HEAD 会以 depth-1 浅克隆随归档传输，无需在离线机另行检出源码；
 - 足够的磁盘空间；
-- 执行实际集成测试时可访问 `/dev/kvm`，并允许特权容器、hugepages、KSM、网络及临时挂载相关操作。
+- 执行实际 KVM 集成测试时，`/dev/kvm` 必须是字符设备；选择 MSHV 时同样要求 `/dev/mshv`；
+- 测试机本身是虚拟机时，外层宿主必须暴露 nested virtualization；特权容器及 `/dev:/dev` 挂载不能创建宿主缺失的 hypervisor 设备；
+- 网络相关用例还需可访问 `/dev/net/tun`，并允许特权容器、hugepages、KSM、网络及临时挂载相关操作。
+
+CLI 的成功跳过只预检所选 hypervisor 主设备；缺少 `/dev/net/tun` 等辅助设备或其他资源时，相关测试仍会在后续阶段失败。
+
+当所选 hypervisor 设备不可用时，普通 integration 和 live migration lane 会打印警告并成功跳过。若命令只选择这两个 lane，则不会拉取镜像、编译或准备 workload；同一命令中选择的其他测试 lane 仍会继续执行。该结果仅表示当前机器不具备运行条件，不表示 VM 测试通过。
 
 建议仅在专用测试机上运行完整集成测试。准备 Bundle 不执行 KVM 测试，也不会配置 KSM 或 hugepages。
 
@@ -379,7 +385,7 @@ ls -l /dev/kvm
 test -r /dev/kvm && test -w /dev/kvm
 ```
 
-测试机还需支持 nested virtualization（如测试场景要求），并允许 Docker 启动特权容器。aarch64 Bundle 必须在联网 aarch64 物理机上准备，并在具备 ARM KVM 支持的离线 aarch64 物理机上运行。
+测试机是虚拟机时必须由外层宿主启用并暴露 nested virtualization，同时允许 Docker 启动特权容器。`--integration` 和 `--integration-live-migration` 在设备缺失或不是字符设备时会明确警告并成功跳过；设备存在但容器仍无法访问时，测试会在后续阶段失败。不要把 skip 退出状态当作测试通过。aarch64 Bundle 必须在联网 aarch64 物理机上准备，并在具备 ARM KVM 支持的离线 aarch64 物理机上运行。
 
 ### 磁盘空间或 hugepages 不足
 
