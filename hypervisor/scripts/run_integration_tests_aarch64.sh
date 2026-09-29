@@ -36,13 +36,18 @@ build_spdk_nvme() {
         [ ! -f "$spdk_dir/scripts/rpc.py" ] ||
         [ ! -d "$spdk_dir/scripts/rpc" ]; then
         pushd "$spdk_dir" || return 1
-        git submodule update --init
-        apt-get update
-        ./scripts/pkgdep.sh
-        ./configure --with-vfio-user
-        chmod +x /usr/local/lib/python3.8/dist-packages/ninja/data/bin/ninja
-        make -j "$(nproc)" || exit 1
-        touch .built
+        git submodule update --init || return 1
+        apt-get update || return 1
+        if ! apt-cache show python 2>/dev/null | grep -q '^Package:'; then
+            sed -i 's/libiscsi-dev python libncurses5-dev/libiscsi-dev python-is-python3 libncurses5-dev/' \
+                scripts/pkgdep/debian.sh || return 1
+        fi
+        ./scripts/pkgdep.sh || return 1
+        sed -i 's/-Wall -Werror -Wextra/-Wall -Werror -Wextra -Wno-deprecated-declarations/' \
+            libvfio-user/CMakeLists.txt || return 1
+        ./configure --with-vfio-user || return 1
+        make -j "$(nproc)" || return 1
+        touch .built || return 1
         popd || return 1
     fi
 
