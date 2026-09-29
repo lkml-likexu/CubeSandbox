@@ -336,7 +336,7 @@ export CH_WORKLOADS_DIR="$PWD/workloads"
 
 x86 默认 live migration lane 中唯一依赖 OVS-DPDK hugepages 的用例目前均为 ignored，因此该 lane 不再预留 6144 个 hugepages；手工启用这些用例前需另行配置 OVS-DPDK 和 hugepages。普通 x86 integration 的 quick 和 full 模式都会请求配置 6144 个 hugepages。
 
-在 aarch64 上，普通 `--integration` 已包含 common、ACPI 和 live migration 测试；`--integration-live-migration` 只运行 ARM 的 parallel 与 sequential live migration 模块。
+`--quick` 目前仅在 x86_64 runner 中缩减测试范围。在 aarch64 上，普通 `--integration` 即使传入 `--quick` 也仍运行 common、ACPI 和 live migration 测试；`--integration-live-migration` 只运行 ARM 的 parallel 与 sequential live migration 模块。
 
 `--offline` 会强制：
 
