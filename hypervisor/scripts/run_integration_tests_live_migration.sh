@@ -54,6 +54,8 @@ VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
 acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1
 
 BUILD_TARGET="$(uname -m)-unknown-linux-${CH_LIBC}"
+CH_CARGO_TARGET_DIR="${CH_CARGO_TARGET_DIR:-target}"
+export CARGO_TARGET_DIR="$CH_CARGO_TARGET_DIR"
 CFLAGS=""
 TARGET_CC=""
 if [[ "${BUILD_TARGET}" == "x86_64-unknown-linux-musl" ]]; then
@@ -61,10 +63,10 @@ if [[ "${BUILD_TARGET}" == "x86_64-unknown-linux-musl" ]]; then
     CFLAGS="-I /usr/include/x86_64-linux-musl/ -idirafter /usr/include/"
 fi
 
-cargo build --all --release $features --target $BUILD_TARGET
-strip target/$BUILD_TARGET/release/cube-hypervisor
-strip target/$BUILD_TARGET/release/vhost_user_net
-strip target/$BUILD_TARGET/release/ch-remote
+cargo build --all --release $features --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/vhost_user_net"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote"
 
 # Use locally-built cube-hypervisor as the "old release" binary for live
 # upgrade tests. Upstream cloud-hypervisor-static v26 lacks PVM CPUID
@@ -72,11 +74,11 @@ strip target/$BUILD_TARGET/release/ch-remote
 # destination use the same binary, so the cross-version upgrade path
 # is not exercised on PVM.
 CH_RELEASE_NAME="cloud-hypervisor-static"
-cp -f target/$BUILD_TARGET/release/cube-hypervisor "$WORKLOADS_DIR"/"$CH_RELEASE_NAME" || exit 1
+cp -f "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$WORKLOADS_DIR/$CH_RELEASE_NAME" || exit 1
 chmod +x "$WORKLOADS_DIR"/"$CH_RELEASE_NAME"
 
 if [ "$prepare_offline" = "true" ]; then
-    cargo test $features --no-run --target $BUILD_TARGET
+    cargo test $features --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
     exit 0
 fi
 

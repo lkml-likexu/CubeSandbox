@@ -410,8 +410,8 @@ for artifact in \
 done
 test "$(cat "$ARM_DERIVE_WORKLOADS/focal-server-cloudimg-root/boot/vmlinuz")" = "$(cat "$ARM_DERIVE_WORKLOADS/Image.gz")"
 test "$(grep -c 'qcow2 -O raw' "$ARM_DERIVE_LOG")" -eq 3
-grep -q '^cargo build --all --release' "$ARM_DERIVE_LOG"
-grep -q '^cargo test .*--no-run' "$ARM_DERIVE_LOG"
+grep -q '^cargo build --all --release .*--target-dir target' "$ARM_DERIVE_LOG"
+grep -q '^cargo test .*--no-run.*--target-dir target' "$ARM_DERIVE_LOG"
 if grep -q 'unexpected wget' "$ARM_DERIVE_LOG"; then
     echo "aarch64 offline derivation attempted a download" >&2
     exit 1
@@ -422,6 +422,7 @@ HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration-live-migration \
     --workloads-base-url 'http://mirror.internal/workloads'
 grep -q -- '--env WORKLOADS_BASE_URL=http://mirror.internal/workloads' "$DOCKER_LOG"
+grep -q -- '--env CH_CARGO_TARGET_DIR=/cloud-hypervisor/build/cargo_target' "$DOCKER_LOG"
 grep -q 'run_integration_tests_live_migration.sh' "$DOCKER_LOG"
 
 : > "$DOCKER_LOG"
@@ -430,6 +431,7 @@ MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
 grep -q 'run_integration_tests_aarch64.sh --live-migration-only --hypervisor kvm' "$DOCKER_LOG"
 grep -q -- '--env CH_OFFLINE=true' "$DOCKER_LOG"
 grep -q -- '--env CARGO_NET_OFFLINE=true' "$DOCKER_LOG"
+grep -q -- '--env CH_CARGO_TARGET_DIR=/cloud-hypervisor/build/cargo_target' "$DOCKER_LOG"
 
 : > "$DOCKER_LOG"
 HOME="$TMP_DIR/home" "$SCRIPT_DIR/dev_cli.sh" build-container --apt-mirror 'http://apt.internal'
@@ -450,9 +452,15 @@ fi
 : > "$DOCKER_LOG"
 mkdir -p \
     "$TMP_DIR/home/workloads/alpine-minirootfs" \
+    "$TMP_DIR/home/workloads/edk2_build" \
+    "$TMP_DIR/home/workloads/linux-custom" \
+    "$TMP_DIR/home/workloads/spdk" \
+    "$TMP_DIR/home/workloads/spdk-nvme/rpc" \
     "$TMP_DIR/home/workloads/vfio" \
+    "$TMP_DIR/home/workloads/virtiofsd_build" \
     "$TMP_DIR/home/workloads/cache/.git"
 printf workload > "$TMP_DIR/home/workloads/vmlinux"
+printf derived > "$TMP_DIR/home/workloads/cloud-hypervisor-static"
 for artifact in \
     bionic-server-cloudimg-amd64.qcow2 \
     focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
@@ -469,6 +477,13 @@ for artifact in \
 done
 printf derived > "$TMP_DIR/home/workloads/alpine-minirootfs/init"
 printf derived > "$TMP_DIR/home/workloads/vfio/focal-server-cloudimg-amd64-custom-20210609-0.raw"
+printf build > "$TMP_DIR/home/workloads/edk2_build/object"
+printf build > "$TMP_DIR/home/workloads/linux-custom/object"
+printf build > "$TMP_DIR/home/workloads/spdk/object"
+printf required > "$TMP_DIR/home/workloads/spdk-nvme/nvmf_tgt"
+printf required > "$TMP_DIR/home/workloads/spdk-nvme/rpc.py"
+printf required > "$TMP_DIR/home/workloads/spdk-nvme/rpc/client.py"
+printf build > "$TMP_DIR/home/workloads/virtiofsd_build/object"
 printf metadata > "$TMP_DIR/home/workloads/cache/.git/config"
 cat > "$TMP_DIR/bin/pigz" <<'EOF'
 #!/bin/bash
@@ -477,21 +492,6 @@ exec /usr/bin/gzip "$@"
 EOF
 chmod +x "$TMP_DIR/bin/pigz"
 export PIGZ_LOG="$TMP_DIR/pigz.log"
-cat > "$TMP_DIR/bin/cp" <<'EOF'
-#!/bin/bash
-[ "$1" = "-a" ] && shift
-source="$1"
-destination="$2"
-if [ "$source" = "$HOME/workloads/." ] || [[ "$source" = "$TEST_TMP_DIR/custom-artifacts/"* ]]; then
-    /bin/cp -a "$source" "$destination"
-else
-    target="$destination/$(basename "$source")"
-    mkdir -p "$target"
-    printf cache > "$target/placeholder"
-fi
-EOF
-chmod +x "$TMP_DIR/bin/cp"
-
 BUNDLE_SOURCE="$TMP_DIR/CubeSandbox-source"
 mkdir -p "$BUNDLE_SOURCE/hypervisor/scripts"
 /bin/cp "$SCRIPT_DIR/dev_cli.sh" "$BUNDLE_SOURCE/hypervisor/scripts/dev_cli.sh"
@@ -541,8 +541,18 @@ fi
 grep -q 'source must be a clean committed Git worktree' "$TMP_DIR/untracked-source.out"
 test ! -s "$DOCKER_LOG"
 rm "$BUNDLE_SOURCE/untracked-source"
-mkdir -p "$BUNDLE_SOURCE/hypervisor/build"
+mkdir -p \
+    "$BUNDLE_SOURCE/hypervisor/build/cargo_registry" \
+    "$BUNDLE_SOURCE/hypervisor/build/cargo_git_registry" \
+    "$BUNDLE_SOURCE/hypervisor/build/cargo_target/x86_64-unknown-linux-gnu/release" \
+    "$BUNDLE_SOURCE/hypervisor/build/cargo_target/aarch64-unknown-linux-gnu/release" \
+    "$BUNDLE_SOURCE/hypervisor/target"
 printf ignored > "$BUNDLE_SOURCE/hypervisor/build/ignored-cache"
+printf registry > "$BUNDLE_SOURCE/hypervisor/build/cargo_registry/placeholder"
+printf git-registry > "$BUNDLE_SOURCE/hypervisor/build/cargo_git_registry/placeholder"
+printf x86-binary > "$BUNDLE_SOURCE/hypervisor/build/cargo_target/x86_64-unknown-linux-gnu/release/cube-hypervisor"
+printf arm-binary > "$BUNDLE_SOURCE/hypervisor/build/cargo_target/aarch64-unknown-linux-gnu/release/cube-hypervisor"
+printf stale > "$BUNDLE_SOURCE/hypervisor/target/must-not-be-bundled"
 
 (
     cd "$TMP_DIR"
@@ -556,6 +566,7 @@ test -n "$BUNDLE"
 grep -q '^pigz$' "$PIGZ_LOG"
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
 grep -q 'run_integration_tests_live_migration.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
+test "$(grep -c -- '--env CH_CARGO_TARGET_DIR=/cloud-hypervisor/build/cargo_target' "$DOCKER_LOG")" -eq 2
 if grep -q '^save ' "$DOCKER_LOG"; then
     echo "bundle preparation unexpectedly exported the development image" >&2
     exit 1
@@ -570,7 +581,8 @@ fi
 grep -q '^./workloads/vmlinux$' "$TMP_DIR/bundle.list"
 grep -q '^./workloads/bionic-server-cloudimg-amd64.qcow2$' "$TMP_DIR/bundle.list"
 grep -q '^./workloads/alpine-minirootfs-x86_64.tar.gz$' "$TMP_DIR/bundle.list"
-if grep -Eq '^\./workloads/(.*/)?\.git(/|$)|^\./workloads/(alpine_initramfs\.img|alpine-minirootfs/)|^\./workloads/(.*/)?[^/]*-server-cloudimg-.*\.(img|raw)$' "$TMP_DIR/bundle.list"; then
+grep -q '^./workloads/spdk-nvme/nvmf_tgt$' "$TMP_DIR/bundle.list"
+if grep -Eq '^\./workloads/(.*/)?\.git(/|$)|^\./workloads/(alpine_initramfs\.img|alpine-minirootfs/|cloud-hypervisor-static$|edk2_build/|linux-custom/|spdk/|vfio/|virtiofsd_build/)|^\./workloads/(.*/)?[^/]*-server-cloudimg-.*\.(img|raw)$' "$TMP_DIR/bundle.list"; then
     echo "bundle unexpectedly contains derived workloads" >&2
     exit 1
 fi
@@ -583,7 +595,15 @@ grep -q '^./CubeSandbox/.git/$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/.git/shallow$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_registry/placeholder$' "$TMP_DIR/bundle.list"
 grep -q '^./CubeSandbox/hypervisor/build/cargo_git_registry/placeholder$' "$TMP_DIR/bundle.list"
-grep -q '^./CubeSandbox/hypervisor/build/cargo_target/placeholder$' "$TMP_DIR/bundle.list"
+grep -q '^./CubeSandbox/hypervisor/build/cargo_target/x86_64-unknown-linux-gnu/release/cube-hypervisor$' "$TMP_DIR/bundle.list"
+if grep -q '^./CubeSandbox/hypervisor/build/cargo_target/aarch64-unknown-linux-' "$TMP_DIR/bundle.list"; then
+    echo "x86_64 bundle unexpectedly contains aarch64 target artifacts" >&2
+    exit 1
+fi
+if grep -q '^./CubeSandbox/hypervisor/target/' "$TMP_DIR/bundle.list"; then
+    echo "bundle unexpectedly contains the legacy hypervisor target directory" >&2
+    exit 1
+fi
 if grep -q '^./CubeSandbox/hypervisor/build/ignored-cache$' "$TMP_DIR/bundle.list"; then
     echo "bundle unexpectedly copied ignored source-tree build output" >&2
     exit 1
@@ -603,6 +623,7 @@ tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_clone_method=git-clone$'
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_clone_depth=1$'
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^source_shallow=true$'
 tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^container_image=registry.internal/cloud-hypervisor/dev:bundle$'
+tar -xOf "$BUNDLE" ./MANIFEST | grep -q '^hypervisor_target_destination=CubeSandbox/hypervisor/build/cargo_target$'
 mkdir "$TMP_DIR/extracted"
 tar -xzf "$BUNDLE" -C "$TMP_DIR/extracted"
 (
@@ -687,11 +708,18 @@ grep -q 'CH_WORKLOADS_DIR must be an absolute path' "$TMP_DIR/path.out"
 ARM_BUNDLE=$(find "$TMP_DIR" -maxdepth 1 -name 'cloud-hypervisor-offline-*-aarch64.tgz' -print -quit)
 test -n "$ARM_BUNDLE"
 grep -q 'run_integration_tests_aarch64.sh --hypervisor kvm --prepare-offline' "$DOCKER_LOG"
+grep -q -- '--env CH_CARGO_TARGET_DIR=/cloud-hypervisor/build/cargo_target' "$DOCKER_LOG"
 if grep -q 'run_integration_tests_live_migration.sh .*--prepare-offline' "$DOCKER_LOG"; then
     echo "aarch64 bundle invoked the x86 live migration preparation script" >&2
     exit 1
 fi
 tar -xOf "$ARM_BUNDLE" ./MANIFEST | grep -q '^architecture=aarch64$'
+tar -tzf "$ARM_BUNDLE" > "$TMP_DIR/arm-bundle.list"
+grep -q '^./CubeSandbox/hypervisor/build/cargo_target/aarch64-unknown-linux-gnu/release/cube-hypervisor$' "$TMP_DIR/arm-bundle.list"
+if grep -q '^./CubeSandbox/hypervisor/build/cargo_target/x86_64-unknown-linux-' "$TMP_DIR/arm-bundle.list"; then
+    echo "aarch64 bundle unexpectedly contains x86_64 target artifacts" >&2
+    exit 1
+fi
 
 ARM_CUSTOM_OUTPUT="$TMP_DIR/arm-custom-output"
 mkdir -p "$ARM_CUSTOM_OUTPUT"

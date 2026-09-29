@@ -220,11 +220,10 @@ CubeSandbox/                      # 当前已提交 HEAD 的 depth-1 clone
 CubeSandbox/.git/                # 保留 shallow Git 元数据
 CubeSandbox/hypervisor/build/cargo_registry/
 CubeSandbox/hypervisor/build/cargo_git_registry/
-CubeSandbox/hypervisor/build/cargo_target/
-CubeSandbox/hypervisor/target/    # 存在时包含
+CubeSandbox/hypervisor/build/cargo_target/  # 唯一的 hypervisor Cargo target
 ```
 
-Bundle 只保留可传输的规范输入：Alpine 仅保留 `alpine-minirootfs-*.tar.gz`，Bionic、Focal 和 Jammy 仅保留 qcow2。`alpine_initramfs.img`、解压目录、raw/img 镜像、ARM update-kernel raw 及 `vfio/` 副本不会进入 Bundle；离线测试启动时会从 tar.gz/qcow2 在本地重新生成这些运行时文件。raw 文件仍用于测试隔离副本、VFIO 嵌套虚机和 ARM 内核注入，但无需重复传输。
+Bundle 只保留可传输的规范输入：Alpine 仅保留 `alpine-minirootfs-*.tar.gz`，Bionic、Focal 和 Jammy 仅保留 qcow2。`alpine_initramfs.img`、解压目录、raw/img 镜像、ARM update-kernel raw、`vfio/` 副本以及联网准备时使用的 Linux、EDK2、SPDK 和 virtiofsd 源码/构建目录不会进入 Bundle；离线测试启动时会从 tar.gz/qcow2 在本地重新生成运行时文件，并直接使用 Bundle 中已生成的内核、固件、SPDK 和 virtiofsd 制品。raw 文件仍用于测试隔离副本、VFIO 嵌套虚机和 ARM 内核注入，但无需重复传输。
 
 源码只能通过本地 `git clone --depth 1 --no-local` 进入 Bundle。`--no-local` 禁用本地 clone 优化，确保 Git 不会忽略 `--depth`；构建过程还会验证 `.git/shallow`、shallow 状态、HEAD 及可达提交数。`CubeSandbox/.git` 会保留，但指向准备机路径的 `origin` 会移除；workloads 内嵌 `.git` 仍会清理。
 
@@ -373,7 +372,6 @@ export CH_WORKLOADS_DIR=/path/to/extracted/workloads
 CubeSandbox/hypervisor/build/cargo_registry
 CubeSandbox/hypervisor/build/cargo_git_registry
 CubeSandbox/hypervisor/build/cargo_target
-CubeSandbox/hypervisor/target
 ```
 
 依赖或源码发生变化后，应在联网机器重新生成 Bundle。

@@ -560,6 +560,7 @@ cmd_tests() {
             --env WORKLOADS_BASE_URL="$WORKLOADS_BASE_URL" \
             --env CH_OFFLINE="$CH_OFFLINE" \
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
+            --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
             "$CTR_IMAGE" \
             ./scripts/run_integration_tests_"$(uname -m)".sh "$@" || fix_dir_perms $? || exit $?
     fi
@@ -645,6 +646,7 @@ cmd_tests() {
             --env WORKLOADS_BASE_URL="$WORKLOADS_BASE_URL" \
             --env CH_OFFLINE="$CH_OFFLINE" \
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
+            --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
             "$CTR_IMAGE" \
             "./scripts/$live_migration_script" "${live_migration_args[@]}" || fix_dir_perms $? || exit $?
     fi
@@ -821,7 +823,16 @@ prune_staged_workloads() {
         die "Failed to remove Git metadata from staged workloads."
     rm -rf \
         "$workloads/alpine_initramfs.img" \
-        "$workloads/alpine-minirootfs" ||
+        "$workloads/alpine-minirootfs" \
+        "$workloads/cloud-hypervisor-static" \
+        "$workloads/edk2_build" \
+        "$workloads/focal-server-cloudimg-root" \
+        "$workloads/linux-custom" \
+        "$workloads/mount_image" \
+        "$workloads/spdk" \
+        "$workloads/vfio" \
+        "$workloads/vfio.img" \
+        "$workloads/virtiofsd_build" ||
         die "Failed to remove derived workloads from the offline bundle."
     find "$workloads" -type f \
         \( -name '*-server-cloudimg-*.img' \
@@ -834,7 +845,12 @@ prune_staged_workloads() {
             -o -name '*-server-cloudimg-*.raw' \
             -o -name 'alpine_initramfs.img' \) \
             -print -quit | grep -q . ||
-        [ -d "$workloads/alpine-minirootfs" ]; then
+        [ -d "$workloads/alpine-minirootfs" ] ||
+        [ -d "$workloads/edk2_build" ] ||
+        [ -d "$workloads/linux-custom" ] ||
+        [ -d "$workloads/spdk" ] ||
+        [ -d "$workloads/vfio" ] ||
+        [ -d "$workloads/virtiofsd_build" ]; then
         die "Offline bundle workloads contain noncanonical derived files."
     fi
 }
@@ -904,6 +920,7 @@ prepare_offline_bundle() {
             --env WORKLOADS_BASE_URL="$WORKLOADS_BASE_URL" \
             --env CH_CUSTOM_X86_ARTIFACTS="$CH_CUSTOM_X86_ARTIFACTS" \
             --env CH_CUSTOM_AARCH64_ARTIFACTS="$CH_CUSTOM_AARCH64_ARTIFACTS" \
+            --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
             "$CTR_IMAGE" \
             "./scripts/$prepare_script" --hypervisor kvm --prepare-offline ||
             die "Failed to prepare offline dependencies with $prepare_script."
@@ -918,6 +935,9 @@ prepare_offline_bundle() {
         die "Failed to restore ownership of prepared offline dependencies."
 
     verify_offline_bundle_source "$source_commit"
+    local build_target="${architecture}-unknown-linux-gnu"
+    [ -f "$CLH_CARGO_TARGET/$build_target/release/cube-hypervisor" ] ||
+        die "Offline preparation did not create the expected release binary in $CLH_CARGO_TARGET/$build_target/release."
 
     local short_commit created_at output
     short_commit=${source_commit:0:12}
@@ -971,10 +991,13 @@ prepare_offline_bundle() {
                 die "Failed to stage $cache_dir."
         fi
     done
-    if [ -d "$CLH_ROOT_DIR/target" ]; then
-        cp -a "$CLH_ROOT_DIR/target" "$staged_source/hypervisor/" ||
-            die "Failed to stage hypervisor target artifacts."
-    fi
+    local other_architecture
+    case "$architecture" in
+    x86_64) other_architecture=aarch64 ;;
+    aarch64) other_architecture=x86_64 ;;
+    esac
+    rm -rf "$staged_source/hypervisor/build/cargo_target/${other_architecture}-unknown-linux-"* ||
+        die "Failed to remove foreign-architecture Cargo target artifacts."
     staged_source_status=$(git -C "$staged_source" status --porcelain --untracked-files=all) ||
         die "Failed to inspect CubeSandbox source after staging offline artifacts."
     [ -z "$staged_source_status" ] ||
@@ -994,7 +1017,7 @@ custom_aarch64_artifacts=$CH_CUSTOM_AARCH64_ARTIFACTS
 source_destination=CubeSandbox
 workloads_destination=workloads
 hypervisor_cache_destination=CubeSandbox/hypervisor/build
-hypervisor_target_destination=CubeSandbox/hypervisor/target
+hypervisor_target_destination=CubeSandbox/hypervisor/build/cargo_target
 EOF
 
     (

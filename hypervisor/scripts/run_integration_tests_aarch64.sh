@@ -285,6 +285,8 @@ RES=$?
 [ $RES -eq 0 ] || exit $RES
 
 BUILD_TARGET="aarch64-unknown-linux-${CH_LIBC}"
+CH_CARGO_TARGET_DIR="${CH_CARGO_TARGET_DIR:-target}"
+export CARGO_TARGET_DIR="$CH_CARGO_TARGET_DIR"
 if [ "$BUILD_TARGET" = "aarch64-unknown-linux-musl" ]; then
     export TARGET_CC="musl-gcc"
     export RUSTFLAGS="-C link-arg=-lgcc -C link_arg=-specs -C link_arg=/usr/lib/aarch64-linux-musl/musl-gcc.specs"
@@ -292,13 +294,13 @@ fi
 
 export RUST_BACKTRACE=1
 
-cargo build --all --release $features --target "$BUILD_TARGET"
-strip "target/$BUILD_TARGET/release/cube-hypervisor"
-strip "target/$BUILD_TARGET/release/vhost_user_net"
-strip "target/$BUILD_TARGET/release/ch-remote"
+cargo build --all --release $features --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/vhost_user_net"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote"
 
 if [ "$prepare_offline" = "true" ]; then
-    cargo test $features --no-run --target "$BUILD_TARGET"
+    cargo test $features --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
     exit 0
 fi
 

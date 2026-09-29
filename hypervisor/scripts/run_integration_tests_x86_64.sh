@@ -225,19 +225,21 @@ cp $FW $VFIO_DIR
 cp $VMLINUX_IMAGE $VFIO_DIR || exit 1
 
 BUILD_TARGET="$(uname -m)-unknown-linux-${CH_LIBC}"
+CH_CARGO_TARGET_DIR="${CH_CARGO_TARGET_DIR:-target}"
+export CARGO_TARGET_DIR="$CH_CARGO_TARGET_DIR"
 
-cargo build --all  --release $features --target $BUILD_TARGET
-strip target/$BUILD_TARGET/release/cube-hypervisor
-strip target/$BUILD_TARGET/release/vhost_user_net
-strip target/$BUILD_TARGET/release/ch-remote
+cargo build --all --release $features --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/vhost_user_net"
+strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote"
 
 # We always copy a fresh version of our binary for our L2 guest.
-cp target/$BUILD_TARGET/release/cube-hypervisor $VFIO_DIR
-cp target/$BUILD_TARGET/release/ch-remote $VFIO_DIR
+cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$VFIO_DIR"
+cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote" "$VFIO_DIR"
 
 if [ "$prepare_offline" = "true" ]; then
-    cargo test $features --no-run --target $BUILD_TARGET
-    cargo test $features --features lib_support --no-run --target $BUILD_TARGET
+    cargo test $features --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
+    cargo test $features --features lib_support --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
     exit 0
 fi
 
