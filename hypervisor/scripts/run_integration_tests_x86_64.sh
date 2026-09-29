@@ -335,7 +335,12 @@ if [ "$quick_mode" = "true" ]; then
 fi
 
 # Full mode: run all tests
-parallel_threads="${test_threads:-$(($(nproc)/2))}"
+parallel_threads="$test_threads"
+if [ -z "$parallel_threads" ]; then
+    host_threads="${_CH_TEST_NPROC:-$(nproc)}"
+    parallel_threads=$((host_threads / 2))
+    [ "$parallel_threads" -gt 0 ] || parallel_threads=1
+fi
 echo "=== Full mode: running all tests with $parallel_threads parallel threads ==="
 
 build_test_filters "common_parallel" "$test_filter"
