@@ -309,7 +309,8 @@ if [ "$quick_mode" = "true" ]; then
         RES=$?
     fi
     if [ $RES -eq 0 ]; then
-        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} "live_migration::test_live_migration_basic"
+        build_test_filters "live_migration::live_migration_parallel" "test_live_migration_basic"
+        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 

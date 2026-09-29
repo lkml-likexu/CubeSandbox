@@ -209,6 +209,12 @@ if HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
 fi
 grep -q 'No test type selected' "$TMP_DIR/no-test-type.out"
 
+build_test_filters "live_migration::live_migration_parallel" "test_live_migration_basic"
+test "${#test_filters[@]}" -eq 1
+test "${test_filters[0]}" = "live_migration::live_migration_parallel::test_live_migration_basic"
+grep -q 'build_test_filters "live_migration::live_migration_parallel" "test_live_migration_basic"' \
+    "$SCRIPT_DIR/run_integration_tests_x86_64.sh"
+
 test "$(WORKLOADS_BASE_URL= workload_url kernel https://public.invalid/kernel)" = "https://public.invalid/kernel"
 printf '%s\n' unknown-artifact > "$WORKLOADS_DIR/.custom_x86_artifacts"
 if load_custom_x86_artifacts >"$TMP_DIR/custom-marker.out" 2>&1; then
