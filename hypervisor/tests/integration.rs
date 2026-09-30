@@ -55,8 +55,6 @@ mod x86_64 {
     pub const FOCAL_SGX_IMAGE_NAME: &str = "focal-server-cloudimg-amd64-sgx.raw";
     pub const HIRSUTE_NVIDIA_IMAGE_NAME: &str = "hirsute-server-cloudimg-amd64-nvidia.raw";
     pub const FOCAL_IMAGE_NAME_QCOW2: &str = "focal-server-cloudimg-amd64-custom-20210609-0.qcow2";
-    pub const FOCAL_IMAGE_NAME_VHD: &str = "focal-server-cloudimg-amd64-custom-20210609-0.vhd";
-    pub const FOCAL_IMAGE_NAME_VHDX: &str = "focal-server-cloudimg-amd64-custom-20210609-0.vhdx";
     pub const JAMMY_IMAGE_NAME: &str = "jammy-server-cloudimg-amd64-custom-20220329-0.raw";
     pub const WINDOWS_IMAGE_NAME: &str = "windows-server-2019.raw";
     pub const OVMF_NAME: &str = "CLOUDHV.fd";
@@ -73,8 +71,6 @@ mod aarch64 {
     pub const FOCAL_IMAGE_UPDATE_KERNEL_NAME: &str =
         "focal-server-cloudimg-arm64-custom-20210929-0-update-kernel.raw";
     pub const FOCAL_IMAGE_NAME_QCOW2: &str = "focal-server-cloudimg-arm64-custom-20210929-0.qcow2";
-    pub const FOCAL_IMAGE_NAME_VHD: &str = "focal-server-cloudimg-arm64-custom-20210929-0.vhd";
-    pub const FOCAL_IMAGE_NAME_VHDX: &str = "focal-server-cloudimg-arm64-custom-20210929-0.vhdx";
     pub const JAMMY_IMAGE_NAME: &str = "jammy-server-cloudimg-arm64-custom-20220329-0.raw";
     pub const WINDOWS_IMAGE_NAME: &str = "windows-11-iot-enterprise-aarch64.raw";
     pub const OVMF_NAME: &str = "CLOUDHV_EFI.fd";
@@ -3469,29 +3465,46 @@ mod common_parallel {
         _test_virtio_block(FOCAL_IMAGE_NAME_QCOW2, false)
     }
 
-    #[test]
-    fn test_virtio_block_vhd() {
+    fn generated_workload_image(format: &str, extension: &str) -> (TempDir, String) {
         let mut workload_path = dirs::home_dir().unwrap();
         workload_path.push("workloads");
+        let image_dir = TempDir::new_in(&workload_path).unwrap();
+        let image_path = image_dir.as_path().join(format!("osdisk.{extension}"));
+        let source_path = workload_path.join(FOCAL_IMAGE_NAME);
 
-        let mut raw_file_path = workload_path.clone();
-        let mut vhd_file_path = workload_path;
-        raw_file_path.push(FOCAL_IMAGE_NAME);
-        vhd_file_path.push(FOCAL_IMAGE_NAME_VHD);
-
-        // Generate VHD file from RAW file
-        std::process::Command::new("qemu-img")
+        let output = std::process::Command::new("qemu-img")
             .arg("convert")
             .arg("-p")
             .args(["-f", "raw"])
-            .args(["-O", "vpc"])
-            .args(["-o", "subformat=fixed"])
-            .arg(raw_file_path.to_str().unwrap())
-            .arg(vhd_file_path.to_str().unwrap())
+            .args(["-O", format])
+            .args(if format == "vpc" {
+                vec!["-o", "subformat=fixed"]
+            } else {
+                Vec::new()
+            })
+            .arg(source_path)
+            .arg(&image_path)
             .output()
-            .expect("Expect generating VHD image from RAW image");
+            .expect("failed to run qemu-img convert");
+        assert!(
+            output.status.success(),
+            "qemu-img convert to {format} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-        _test_virtio_block(FOCAL_IMAGE_NAME_VHD, false)
+        let image_name = image_path
+            .strip_prefix(&workload_path)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        (image_dir, image_name)
+    }
+
+    #[test]
+    fn test_virtio_block_vhd() {
+        let (_image_dir, image_name) = generated_workload_image("vpc", "vhd");
+        _test_virtio_block(&image_name, false)
     }
 
     #[test]
@@ -3500,26 +3513,8 @@ mod common_parallel {
             "PVM: vhdx toolchain/firmware compatibility (aligned with intranet cube skip)"
         );
 
-        let mut workload_path = dirs::home_dir().unwrap();
-        workload_path.push("workloads");
-
-        let mut raw_file_path = workload_path.clone();
-        let mut vhdx_file_path = workload_path;
-        raw_file_path.push(FOCAL_IMAGE_NAME);
-        vhdx_file_path.push(FOCAL_IMAGE_NAME_VHDX);
-
-        // Generate dynamic VHDX file from RAW file
-        std::process::Command::new("qemu-img")
-            .arg("convert")
-            .arg("-p")
-            .args(["-f", "raw"])
-            .args(["-O", "vhdx"])
-            .arg(raw_file_path.to_str().unwrap())
-            .arg(vhdx_file_path.to_str().unwrap())
-            .output()
-            .expect("Expect generating dynamic VHDx image from RAW image");
-
-        _test_virtio_block(FOCAL_IMAGE_NAME_VHDX, false)
+        let (_image_dir, image_name) = generated_workload_image("vhdx", "vhdx");
+        _test_virtio_block(&image_name, false)
     }
 
     #[test]
@@ -3527,23 +3522,25 @@ mod common_parallel {
         const VIRTUAL_DISK_SIZE: u64 = 100 << 20;
         const EMPTY_VHDX_FILE_SIZE: u64 = 8 << 20;
         const FULL_VHDX_FILE_SIZE: u64 = 112 << 20;
-        const DYNAMIC_VHDX_NAME: &str = "dynamic.vhdx";
-
         let mut workload_path = dirs::home_dir().unwrap();
         workload_path.push("workloads");
-
-        let mut vhdx_file_path = workload_path;
-        vhdx_file_path.push(DYNAMIC_VHDX_NAME);
+        let image_dir = TempDir::new_in(&workload_path).unwrap();
+        let vhdx_file_path = image_dir.as_path().join("dynamic.vhdx");
         let vhdx_path = vhdx_file_path.to_str().unwrap();
 
         // Generate a 100 MiB dynamic VHDX file
-        std::process::Command::new("qemu-img")
+        let output = std::process::Command::new("qemu-img")
             .arg("create")
             .args(["-f", "vhdx"])
             .arg(vhdx_path)
             .arg(VIRTUAL_DISK_SIZE.to_string())
             .output()
-            .expect("Expect generating dynamic VHDx image from RAW image");
+            .expect("failed to run qemu-img create");
+        assert!(
+            output.status.success(),
+            "qemu-img create failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         // Check if the size matches with empty VHDx file size
         assert_eq!(vhdx_image_size(vhdx_path), EMPTY_VHDX_FILE_SIZE);
