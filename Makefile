@@ -16,6 +16,7 @@ ROOT_DIR := $(shell pwd)
 UID := $(shell id -u)
 GID := $(shell id -g)
 OUTPUT_DIR ?= $(ROOT_DIR)/_output/bin
+OUTPUT_DIR_ABS = $(shell realpath -m -- "$(OUTPUT_DIR)")
 RELEASE_DIR ?= $(ROOT_DIR)/_output/release
 # Host path for cube-agent.ext4 (+ version). Must be under the workspace so the
 # builder container can write it via the /workspace mount.
@@ -92,6 +93,22 @@ BINARIES := \
 	shim \
 	#
 
+HYPERVISOR_PACKAGES := \
+	cube-hypervisor \
+	performance-metrics \
+	vhost_user_block \
+	vhost_user_net \
+	#
+
+HYPERVISOR_BINARIES := \
+	cube-hypervisor \
+	ch-remote \
+	cube-cpuid \
+	performance-metrics \
+	vhost_user_block \
+	vhost_user_net \
+	#
+
 # All versioned binaries should consume the canonical CUBE_VERSION /
 # CUBE_COMMIT / CUBE_BUILD_TIME triplet. Keep the root Makefile's ad-hoc
 # builder path aligned with the one-click release path so `_output/bin/* --version`
@@ -162,6 +179,7 @@ help:
 	@printf "  cubeops       Build CubeOps in Docker\n"
 	@printf "  cubeops-test  Run CubeOps unit tests in Docker\n"
 	@printf "  shim          Build containerd-shim-cube-rs and cube-runtime in Docker\n"
+	@printf "  hypervisor    Build hypervisor binaries in Docker\n"
 	@printf "  cubemaster-test Run CubeMaster unit tests in Docker\n"
 	@printf "  cubetemplatecenter-test Run CubeTemplateCenter unit tests in Docker\n"
 	@printf "  cubelet-test  Run Cubelet unit tests in Docker\n"
@@ -577,6 +595,13 @@ agent-test: builder-image
 .PHONY: hypervisor-test
 hypervisor-test: builder-image
 	$(MAKE) builder-run BUILDER_CMD='cd /workspace/hypervisor && cargo test --features kvm --lib --bins && cargo test -p block_util --lib'
+
+.PHONY: hypervisor
+hypervisor: builder-image
+	@mkdir -p "$(OUTPUT_DIR)"
+	$(MAKE) builder-run \
+		BUILDER_RUN_EXTRA_MOUNTS='-v "$(OUTPUT_DIR_ABS):/output"' \
+		BUILDER_CMD='cd /workspace/hypervisor && cargo build --locked --release --features kvm $(foreach package,$(HYPERVISOR_PACKAGES),--package $(package)) $(foreach binary,$(HYPERVISOR_BINARIES),--bin $(binary)) && install -m 0755 $(addprefix target/release/,$(HYPERVISOR_BINARIES)) /output/'
 
 .PHONY: shim
 shim: builder-image
