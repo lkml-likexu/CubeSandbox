@@ -14,6 +14,7 @@ on:
       - 'pkgs/proto/**'
       - 'Cubelet/**'
       - 'CubeShim/**'
+      - 'hypervisor/**'
       - 'agent/**'
       - 'examples/volume/s3/**'
       - 'docker/Dockerfile.builder'
@@ -32,6 +33,7 @@ on:
       - 'pkgs/proto/**'
       - 'Cubelet/**'
       - 'CubeShim/**'
+      - 'hypervisor/**'
       - 'agent/**'
       - 'examples/volume/s3/**'
       - 'docker/Dockerfile.builder'
@@ -65,7 +67,7 @@ jobs:
         # make target + expected binaries. Architecture coverage catches
         # arch-specific regressions (e.g. cfg(target_arch) code in the shim /
         # hypervisor) that an amd64-only build would miss.
-        component: [CubeAPI, CubeOps, CubeMaster, CubeTemplateCenter, Cubelet, agent, CubeShim, volume-s3]
+        component: [CubeAPI, CubeOps, CubeMaster, CubeTemplateCenter, Cubelet, agent, CubeShim, Hypervisor, volume-s3]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -104,6 +106,15 @@ jobs:
             expected_bins: |
               _output/bin/containerd-shim-cube-rs
               _output/bin/cube-runtime
+          - component: Hypervisor
+            make_target: hypervisor
+            expected_bins: |
+              _output/bin/cube-hypervisor
+              _output/bin/ch-remote
+              _output/bin/cube-cpuid
+              _output/bin/performance-metrics
+              _output/bin/vhost_user_block
+              _output/bin/vhost_user_net
           # S3 Volume plugin (examples/volume/s3): its own Go module, so it is
           # not covered by any component build above.
           - component: volume-s3
