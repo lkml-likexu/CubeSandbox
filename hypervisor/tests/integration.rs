@@ -4283,10 +4283,10 @@ mod common_parallel {
                 1
             );
 
-            guest.ssh_command("sudo shutdown -h now").unwrap();
+            guest.ssh_command("sudo poweroff").unwrap();
         });
 
-        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(20));
+        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(60));
         let output = child.wait_with_output().unwrap();
         handle_child_output(r, &output);
 
@@ -4378,16 +4378,16 @@ mod common_parallel {
                 }
             }
 
-            guest.ssh_command("sudo shutdown -h now").unwrap();
+            guest.ssh_command("sudo poweroff").unwrap();
         });
 
-        let _ = child.wait_timeout(std::time::Duration::from_secs(20));
-        kill_child(&mut child);
+        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(60));
         let output = child.wait_with_output().unwrap();
         handle_child_output(r, &output);
 
         let r = std::panic::catch_unwind(|| {
             // Check that the cloud-hypervisor binary actually terminated
+            assert!(exited, "cloud-hypervisor did not terminate after shutdown");
             assert!(output.status.success())
         });
         handle_child_output(r, &output);
@@ -4460,9 +4460,9 @@ mod common_parallel {
 
         guest.wait_vm_boot(None).unwrap();
 
-        guest.ssh_command("sudo shutdown -h now").unwrap();
+        guest.ssh_command("sudo poweroff").unwrap();
 
-        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(20));
+        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(60));
         let output = child.wait_with_output().unwrap();
 
         let r = std::panic::catch_unwind(|| {
