@@ -3610,55 +3610,6 @@ mod common_parallel {
     }
 
     #[test]
-    fn test_virtio_block_direct_and_firmware() {
-        skip_if_pvm!("PVM host does not support firmware boot");
-
-        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
-        let guest = Guest::new(Box::new(focal));
-
-        // The OS disk must be copied to a location that is not backed by
-        // tmpfs, otherwise the syscall openat(2) with O_DIRECT simply fails
-        // with EINVAL because tmpfs doesn't support this flag.
-        let mut workloads_path = dirs::home_dir().unwrap();
-        workloads_path.push("workloads");
-        let os_dir = TempDir::new_in(workloads_path.as_path()).unwrap();
-        let mut os_path = os_dir.as_path().to_path_buf();
-        os_path.push("osdisk.img");
-        rate_limited_copy(
-            guest.disk_config.disk(DiskType::OperatingSystem).unwrap(),
-            os_path.as_path(),
-        )
-        .expect("copying of OS disk failed");
-
-        let mut child = GuestCommand::new(&guest)
-            .args(["--cpus", "boot=1"])
-            .args(["--memory", "size=512M"])
-            .args(["--kernel", fw_path(FwType::RustHypervisorFirmware).as_str()])
-            .args([
-                "--disk",
-                format!("path={},direct=on", os_path.as_path().to_str().unwrap()).as_str(),
-                format!(
-                    "path={}",
-                    guest.disk_config.disk(DiskType::CloudInit).unwrap()
-                )
-                .as_str(),
-            ])
-            .default_net()
-            .capture_output()
-            .spawn()
-            .unwrap();
-
-        let r = std::panic::catch_unwind(|| {
-            guest.wait_vm_boot(Some(120)).unwrap();
-        });
-
-        kill_child(&mut child);
-        let output = child.wait_with_output().unwrap();
-
-        handle_child_output(r, &output);
-    }
-
-    #[test]
     fn test_vhost_user_net_default() {
         test_vhost_user_net(None, 2, &prepare_vhost_user_net_daemon, false, false)
     }
@@ -7031,179 +6982,6 @@ mod common_parallel {
         handle_child_output(r, &output);
     }
 
-    // By design, a guest VM won't be able to connect to the host
-    // machine when using a macvtap network interface (while it can
-    // communicate externally). As a workaround, this integration
-    // test creates two macvtap interfaces in 'bridge' mode on the
-    // same physical net interface, one for the guest and one for
-    // the host. With additional setup on the IP address and the
-    // routing table, it enables the communications between the
-    // guest VM and the host machine.
-    // Details: https://wiki.libvirt.org/page/TroubleshootMacvtapHostFail
-    fn _test_macvtap(hotplug: bool, guest_macvtap_name: &str, host_macvtap_name: &str) {
-        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
-        let guest = Guest::new(Box::new(focal));
-        let api_socket = temp_api_path(&guest.tmp_dir);
-
-        #[cfg(target_arch = "x86_64")]
-        let kernel_path = direct_kernel_boot_path();
-        #[cfg(target_arch = "aarch64")]
-        let kernel_path = edk2_path();
-
-        let phy_net = "eth0";
-        let probe_name = "macvtap-probe";
-        let probe = exec_host_command_output(&format!(
-            "sudo ip link add link {} name {} type macvtap mode bridge",
-            phy_net, probe_name
-        ));
-        if !probe.status.success() {
-            let stderr = String::from_utf8_lossy(&probe.stderr);
-            if stderr.contains("Unknown device type") {
-                eprintln!("Skipping macvtap test: the host kernel does not support macvtap");
-                return;
-            }
-            panic!("macvtap capability probe failed: {stderr}");
-        }
-        assert!(exec_host_command_status(&format!("sudo ip link del {}", probe_name)).success());
-
-        // Create a macvtap interface for the guest VM to use
-        assert!(exec_host_command_status(&format!(
-            "sudo ip link add link {} name {} type macvtap mode bridge",
-            phy_net, guest_macvtap_name
-        ))
-        .success());
-        assert!(exec_host_command_status(&format!(
-            "sudo ip link set {} address {} up",
-            guest_macvtap_name, guest.network.guest_mac
-        ))
-        .success());
-        assert!(
-            exec_host_command_status(&format!("sudo ip link show {}", guest_macvtap_name))
-                .success()
-        );
-
-        let tap_index =
-            fs::read_to_string(format!("/sys/class/net/{}/ifindex", guest_macvtap_name)).unwrap();
-        let tap_device = format!("/dev/tap{}", tap_index.trim());
-
-        // In a container netns (non init_net), devtmpfs does not auto-create
-        // /dev/tap<ifindex> for macvtap devices. On bare metal (init_net) the
-        // node is auto-created by devtmpfs, so this workaround is a no-op there.
-        if !std::path::Path::new(&tap_device).exists() {
-            let dev = fs::read_to_string(format!("/sys/class/macvtap/tap{}/dev", tap_index.trim()))
-                .expect("failed to read macvtap dev from sysfs");
-            let dev = dev.trim();
-            let (major, minor) = dev.split_once(':').expect("invalid macvtap dev format");
-            assert!(exec_host_command_status(&format!(
-                "sudo mknod {} c {} {}",
-                tap_device, major, minor
-            ))
-            .success());
-        }
-
-        assert!(
-            exec_host_command_status(&format!("sudo chown $UID.$UID {}", tap_device)).success()
-        );
-
-        let cstr_tap_device = std::ffi::CString::new(tap_device).unwrap();
-        let tap_fd1 = unsafe { libc::open(cstr_tap_device.as_ptr(), libc::O_RDWR) };
-        assert!(tap_fd1 > 0);
-        let tap_fd2 = unsafe { libc::open(cstr_tap_device.as_ptr(), libc::O_RDWR) };
-        assert!(tap_fd2 > 0);
-
-        // Create a macvtap on the same physical net interface for
-        // the host machine to use
-        assert!(exec_host_command_status(&format!(
-            "sudo ip link add link {} name {} type macvtap mode bridge",
-            phy_net, host_macvtap_name
-        ))
-        .success());
-        // Use default mask "255.255.255.0"
-        assert!(exec_host_command_status(&format!(
-            "sudo ip address add {}/24 dev {}",
-            guest.network.host_ip, host_macvtap_name
-        ))
-        .success());
-        assert!(exec_host_command_status(&format!(
-            "sudo ip link set dev {} up",
-            host_macvtap_name
-        ))
-        .success());
-
-        let mut guest_command = GuestCommand::new(&guest);
-        guest_command
-            .args(["--cpus", "boot=2"])
-            .args(["--memory", "size=512M"])
-            .args(["--kernel", kernel_path.to_str().unwrap()])
-            .args(["--cmdline", DIRECT_KERNEL_BOOT_CMDLINE])
-            .default_disks()
-            .args(["--api-socket", &api_socket]);
-
-        let net_params = format!(
-            "fd=[{},{}],mac={},num_queues=4",
-            tap_fd1, tap_fd2, guest.network.guest_mac
-        );
-
-        if !hotplug {
-            guest_command.args(["--net", &net_params]);
-        }
-
-        let mut child = guest_command.capture_output().spawn().unwrap();
-
-        if hotplug {
-            // Give some time to the VMM process to listen to the API
-            // socket. This is the only requirement to avoid the following
-            // call to ch-remote from failing.
-            thread::sleep(std::time::Duration::new(10, 0));
-            // Hotplug the virtio-net device
-            let (cmd_success, cmd_output) =
-                remote_command_w_output(&api_socket, "add-net", Some(&net_params));
-            assert!(cmd_success);
-            #[cfg(target_arch = "x86_64")]
-            assert!(String::from_utf8_lossy(&cmd_output)
-                .contains("{\"id\":\"_net2\",\"bdf\":\"0000:00:05.0\"}"));
-            #[cfg(target_arch = "aarch64")]
-            assert!(String::from_utf8_lossy(&cmd_output)
-                .contains("{\"id\":\"_net0\",\"bdf\":\"0000:00:05.0\"}"));
-        }
-
-        // The functional connectivity provided by the virtio-net device
-        // gets tested through wait_vm_boot() as it expects to receive a
-        // HTTP request, and through the SSH command as well.
-        let r = std::panic::catch_unwind(|| {
-            guest.wait_vm_boot(None).unwrap();
-
-            assert_eq!(
-                guest
-                    .ssh_command("ip -o link | wc -l")
-                    .unwrap()
-                    .trim()
-                    .parse::<u32>()
-                    .unwrap_or_default(),
-                2
-            );
-        });
-
-        let _ = child.kill();
-
-        exec_host_command_status(&format!("sudo ip link del {}", guest_macvtap_name));
-        exec_host_command_status(&format!("sudo ip link del {}", host_macvtap_name));
-
-        let output = child.wait_with_output().unwrap();
-
-        handle_child_output(r, &output);
-    }
-
-    #[test]
-    fn test_macvtap() {
-        _test_macvtap(false, "guestmacvtap0", "hostmacvtap0")
-    }
-
-    #[test]
-    fn test_macvtap_hotplug() {
-        _test_macvtap(true, "guestmacvtap1", "hostmacvtap1")
-    }
-
     #[test]
     #[cfg(not(feature = "mshv"))]
     fn test_ovs_dpdk() {
@@ -7677,6 +7455,228 @@ mod common_sequential {
     use vmm::vm_config::{DiskConfig, FsConfig, NetConfig, PmemConfig, VsockConfig};
 
     use crate::*;
+
+    #[test]
+    fn test_virtio_block_direct_and_firmware() {
+        skip_if_pvm!("PVM host does not support firmware boot");
+
+        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
+        let guest = Guest::new(Box::new(focal));
+
+        // The OS disk must be copied to a location that is not backed by
+        // tmpfs, otherwise the syscall openat(2) with O_DIRECT simply fails
+        // with EINVAL because tmpfs doesn't support this flag.
+        let mut workloads_path = dirs::home_dir().unwrap();
+        workloads_path.push("workloads");
+        let os_dir = TempDir::new_in(workloads_path.as_path()).unwrap();
+        let mut os_path = os_dir.as_path().to_path_buf();
+        os_path.push("osdisk.img");
+        rate_limited_copy(
+            guest.disk_config.disk(DiskType::OperatingSystem).unwrap(),
+            os_path.as_path(),
+        )
+        .expect("copying of OS disk failed");
+
+        let mut child = GuestCommand::new(&guest)
+            .args(["--cpus", "boot=1"])
+            .args(["--memory", "size=512M"])
+            .args(["--kernel", fw_path(FwType::RustHypervisorFirmware).as_str()])
+            .args([
+                "--disk",
+                format!("path={},direct=on", os_path.as_path().to_str().unwrap()).as_str(),
+                format!(
+                    "path={}",
+                    guest.disk_config.disk(DiskType::CloudInit).unwrap()
+                )
+                .as_str(),
+            ])
+            .default_net()
+            .capture_output()
+            .spawn()
+            .unwrap();
+
+        let r = std::panic::catch_unwind(|| {
+            guest.wait_vm_boot(Some(120)).unwrap();
+        });
+
+        kill_child(&mut child);
+        let output = child.wait_with_output().unwrap();
+
+        handle_child_output(r, &output);
+    }
+
+    // By design, a guest VM won't be able to connect to the host
+    // machine when using a macvtap network interface (while it can
+    // communicate externally). As a workaround, this integration
+    // test creates two macvtap interfaces in 'bridge' mode on the
+    // same physical net interface, one for the guest and one for
+    // the host. With additional setup on the IP address and the
+    // routing table, it enables the communications between the
+    // guest VM and the host machine.
+    // Details: https://wiki.libvirt.org/page/TroubleshootMacvtapHostFail
+    fn _test_macvtap(hotplug: bool, guest_macvtap_name: &str, host_macvtap_name: &str) {
+        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
+        let guest = Guest::new(Box::new(focal));
+        let api_socket = temp_api_path(&guest.tmp_dir);
+
+        #[cfg(target_arch = "x86_64")]
+        let kernel_path = direct_kernel_boot_path();
+        #[cfg(target_arch = "aarch64")]
+        let kernel_path = edk2_path();
+
+        let phy_net = "eth0";
+        let probe_name = "macvtap-probe";
+        let probe = exec_host_command_output(&format!(
+            "sudo ip link add link {} name {} type macvtap mode bridge",
+            phy_net, probe_name
+        ));
+        if !probe.status.success() {
+            let stderr = String::from_utf8_lossy(&probe.stderr);
+            if stderr.contains("Unknown device type") {
+                eprintln!("Skipping macvtap test: the host kernel does not support macvtap");
+                return;
+            }
+            panic!("macvtap capability probe failed: {stderr}");
+        }
+        assert!(exec_host_command_status(&format!("sudo ip link del {}", probe_name)).success());
+
+        // Create a macvtap interface for the guest VM to use
+        assert!(exec_host_command_status(&format!(
+            "sudo ip link add link {} name {} type macvtap mode bridge",
+            phy_net, guest_macvtap_name
+        ))
+        .success());
+        assert!(exec_host_command_status(&format!(
+            "sudo ip link set {} address {} up",
+            guest_macvtap_name, guest.network.guest_mac
+        ))
+        .success());
+        assert!(
+            exec_host_command_status(&format!("sudo ip link show {}", guest_macvtap_name))
+                .success()
+        );
+
+        let tap_index =
+            fs::read_to_string(format!("/sys/class/net/{}/ifindex", guest_macvtap_name)).unwrap();
+        let tap_device = format!("/dev/tap{}", tap_index.trim());
+
+        // In a container netns (non init_net), devtmpfs does not auto-create
+        // /dev/tap<ifindex> for macvtap devices. On bare metal (init_net) the
+        // node is auto-created by devtmpfs, so this workaround is a no-op there.
+        if !std::path::Path::new(&tap_device).exists() {
+            let dev = fs::read_to_string(format!("/sys/class/macvtap/tap{}/dev", tap_index.trim()))
+                .expect("failed to read macvtap dev from sysfs");
+            let dev = dev.trim();
+            let (major, minor) = dev.split_once(':').expect("invalid macvtap dev format");
+            assert!(exec_host_command_status(&format!(
+                "sudo mknod {} c {} {}",
+                tap_device, major, minor
+            ))
+            .success());
+        }
+
+        assert!(
+            exec_host_command_status(&format!("sudo chown $UID.$UID {}", tap_device)).success()
+        );
+
+        let cstr_tap_device = std::ffi::CString::new(tap_device).unwrap();
+        let tap_fd1 = unsafe { libc::open(cstr_tap_device.as_ptr(), libc::O_RDWR) };
+        assert!(tap_fd1 > 0);
+        let tap_fd2 = unsafe { libc::open(cstr_tap_device.as_ptr(), libc::O_RDWR) };
+        assert!(tap_fd2 > 0);
+
+        // Create a macvtap on the same physical net interface for
+        // the host machine to use
+        assert!(exec_host_command_status(&format!(
+            "sudo ip link add link {} name {} type macvtap mode bridge",
+            phy_net, host_macvtap_name
+        ))
+        .success());
+        // Use default mask "255.255.255.0"
+        assert!(exec_host_command_status(&format!(
+            "sudo ip address add {}/24 dev {}",
+            guest.network.host_ip, host_macvtap_name
+        ))
+        .success());
+        assert!(exec_host_command_status(&format!(
+            "sudo ip link set dev {} up",
+            host_macvtap_name
+        ))
+        .success());
+
+        let mut guest_command = GuestCommand::new(&guest);
+        guest_command
+            .args(["--cpus", "boot=2"])
+            .args(["--memory", "size=512M"])
+            .args(["--kernel", kernel_path.to_str().unwrap()])
+            .args(["--cmdline", DIRECT_KERNEL_BOOT_CMDLINE])
+            .default_disks()
+            .args(["--api-socket", &api_socket]);
+
+        let net_params = format!(
+            "fd=[{},{}],mac={},num_queues=4",
+            tap_fd1, tap_fd2, guest.network.guest_mac
+        );
+
+        if !hotplug {
+            guest_command.args(["--net", &net_params]);
+        }
+
+        let mut child = guest_command.capture_output().spawn().unwrap();
+
+        if hotplug {
+            // Give some time to the VMM process to listen to the API
+            // socket. This is the only requirement to avoid the following
+            // call to ch-remote from failing.
+            thread::sleep(std::time::Duration::new(10, 0));
+            // Hotplug the virtio-net device
+            let (cmd_success, cmd_output) =
+                remote_command_w_output(&api_socket, "add-net", Some(&net_params));
+            assert!(cmd_success);
+            #[cfg(target_arch = "x86_64")]
+            assert!(String::from_utf8_lossy(&cmd_output)
+                .contains("{\"id\":\"_net2\",\"bdf\":\"0000:00:05.0\"}"));
+            #[cfg(target_arch = "aarch64")]
+            assert!(String::from_utf8_lossy(&cmd_output)
+                .contains("{\"id\":\"_net0\",\"bdf\":\"0000:00:05.0\"}"));
+        }
+
+        // The functional connectivity provided by the virtio-net device
+        // gets tested through wait_vm_boot() as it expects to receive a
+        // HTTP request, and through the SSH command as well.
+        let r = std::panic::catch_unwind(|| {
+            guest.wait_vm_boot(None).unwrap();
+
+            assert_eq!(
+                guest
+                    .ssh_command("ip -o link | wc -l")
+                    .unwrap()
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or_default(),
+                2
+            );
+        });
+
+        let _ = child.kill();
+
+        exec_host_command_status(&format!("sudo ip link del {}", guest_macvtap_name));
+        exec_host_command_status(&format!("sudo ip link del {}", host_macvtap_name));
+
+        let output = child.wait_with_output().unwrap();
+
+        handle_child_output(r, &output);
+    }
+
+    #[test]
+    fn test_macvtap() {
+        _test_macvtap(false, "guestmacvtap0", "hostmacvtap0")
+    }
+
+    #[test]
+    fn test_macvtap_hotplug() {
+        _test_macvtap(true, "guestmacvtap1", "hostmacvtap1")
+    }
 
     #[test]
     fn test_watchdog() {
