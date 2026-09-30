@@ -18,7 +18,7 @@ use std::os::unix::{
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{atomic, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::{fmt, fs};
@@ -353,7 +353,7 @@ impl DiskConfig for UbuntuDiskConfig {
         let osdisk_path = String::from(tmp_dir.as_path().join("osdisk.img").to_str().unwrap());
         let cloudinit_path = self.prepare_cloudinit(tmp_dir, network);
 
-        rate_limited_copy(osdisk_base_path, &osdisk_path)
+        prepare_guest_os_disk(osdisk_base_path, &osdisk_path)
             .expect("copying of OS source disk image failed");
 
         self.cloudinit_path = cloudinit_path;
@@ -467,6 +467,73 @@ impl DiskConfig for WindowsDiskConfig {
             DiskType::CloudInit => None,
         }
     }
+}
+
+const DEFAULT_DISK_PREP_JOBS: usize = 2;
+
+fn parse_disk_prep_jobs(value: Option<&OsStr>) -> Result<usize, String> {
+    match value {
+        None => Ok(DEFAULT_DISK_PREP_JOBS),
+        Some(value) => {
+            let value = value
+                .to_str()
+                .ok_or_else(|| "CH_TEST_DISK_PREP_JOBS must be valid UTF-8".to_string())?;
+            let jobs = value.parse::<usize>().map_err(|_| {
+                format!("CH_TEST_DISK_PREP_JOBS must be a positive integer: {value}")
+            })?;
+            if jobs == 0 {
+                return Err("CH_TEST_DISK_PREP_JOBS must be a positive integer: 0".to_string());
+            }
+            Ok(jobs)
+        }
+    }
+}
+
+struct DiskPrepLimiter {
+    available: Mutex<usize>,
+    condvar: Condvar,
+}
+
+impl DiskPrepLimiter {
+    fn new(jobs: usize) -> Self {
+        assert!(jobs > 0, "disk preparation job count must be positive");
+        Self {
+            available: Mutex::new(jobs),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> DiskPrepPermit<'_> {
+        let mut available = self.available.lock().unwrap();
+        while *available == 0 {
+            available = self.condvar.wait(available).unwrap();
+        }
+        *available -= 1;
+        DiskPrepPermit { limiter: self }
+    }
+}
+
+struct DiskPrepPermit<'a> {
+    limiter: &'a DiskPrepLimiter,
+}
+
+impl Drop for DiskPrepPermit<'_> {
+    fn drop(&mut self) {
+        let mut available = self.limiter.available.lock().unwrap();
+        *available += 1;
+        self.limiter.condvar.notify_one();
+    }
+}
+
+static DISK_PREP_LIMITER: Lazy<DiskPrepLimiter> = Lazy::new(|| {
+    let jobs = parse_disk_prep_jobs(env::var_os("CH_TEST_DISK_PREP_JOBS").as_deref())
+        .unwrap_or_else(|error| panic!("{error}"));
+    DiskPrepLimiter::new(jobs)
+});
+
+fn prepare_guest_os_disk<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<u64> {
+    let _permit = DISK_PREP_LIMITER.acquire();
+    rate_limited_copy(from, to)
 }
 
 pub fn rate_limited_copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<u64> {
@@ -794,7 +861,15 @@ pub fn kill_child(child: &mut Child) {
 
 pub const PIPE_SIZE: i32 = 32 << 20;
 
-static NEXT_VM_ID: Lazy<Mutex<u8>> = Lazy::new(|| Mutex::new(1));
+static NEXT_VM_ID: atomic::AtomicU8 = atomic::AtomicU8::new(1);
+
+fn allocate_vm_id(next_vm_id: &atomic::AtomicU8) -> u8 {
+    next_vm_id
+        .fetch_update(atomic::Ordering::Relaxed, atomic::Ordering::Relaxed, |id| {
+            id.checked_add(1)
+        })
+        .unwrap_or_else(|_| panic!("VM ID exhausted"))
+}
 
 pub struct Guest {
     pub tmp_dir: TempDir,
@@ -847,10 +922,7 @@ impl Guest {
     }
 
     pub fn new(disk_config: Box<dyn DiskConfig>) -> Self {
-        let mut guard = NEXT_VM_ID.lock().unwrap();
-        let id = *guard;
-        *guard = id + 1;
-
+        let id = allocate_vm_id(&NEXT_VM_ID);
         Self::new_from_ip_range(disk_config, "192.168", id)
     }
 
@@ -1809,10 +1881,16 @@ pub fn parse_ethr_latency_output(output: &[u8]) -> Result<Vec<f64>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clh_command_path, is_pvm_environment_with};
+    use super::{
+        allocate_vm_id, clh_command_path, is_pvm_environment_with, parse_disk_prep_jobs,
+        DiskPrepLimiter, DEFAULT_DISK_PREP_JOBS,
+    };
     use std::ffi::OsStr;
     use std::fs;
     use std::path::Path;
+    use std::sync::{atomic, mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn clh_command_uses_custom_target_directory() {
@@ -1878,6 +1956,58 @@ mod tests {
                 Some(OsStr::new(marker))
             ));
         }
+    }
+
+    #[test]
+    fn disk_prep_jobs_are_positive() {
+        assert_eq!(parse_disk_prep_jobs(None).unwrap(), DEFAULT_DISK_PREP_JOBS);
+        assert_eq!(parse_disk_prep_jobs(Some(OsStr::new("4"))).unwrap(), 4);
+
+        for value in ["", "0", "-1", "invalid"] {
+            assert!(parse_disk_prep_jobs(Some(OsStr::new(value))).is_err());
+        }
+    }
+
+    #[test]
+    fn disk_prep_limiter_bounds_concurrency_and_releases_permits() {
+        let limiter = Arc::new(DiskPrepLimiter::new(1));
+        let first_permit = limiter.acquire();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let worker_limiter = Arc::clone(&limiter);
+        let worker = thread::spawn(move || {
+            let _permit = worker_limiter.acquire();
+            acquired_tx.send(()).unwrap();
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first_permit);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+
+        let _permit = limiter.acquire();
+    }
+
+    #[test]
+    fn vm_ids_are_unique_across_threads() {
+        let next_vm_id = Arc::new(atomic::AtomicU8::new(1));
+        let mut workers = Vec::new();
+        for _ in 0..16 {
+            let next_vm_id = Arc::clone(&next_vm_id);
+            workers.push(thread::spawn(move || allocate_vm_id(&next_vm_id)));
+        }
+
+        let mut ids: Vec<u8> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    #[should_panic(expected = "VM ID exhausted")]
+    fn vm_id_exhaustion_does_not_wrap() {
+        allocate_vm_id(&atomic::AtomicU8::new(u8::MAX));
     }
 }
 

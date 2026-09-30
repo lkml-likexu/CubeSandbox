@@ -486,6 +486,10 @@ cmd_tests() {
     if [ -n "$test_threads" ] && [[ ! "$test_threads" =~ ^[1-9][0-9]*$ ]]; then
         die "Test thread count must be a positive integer: $test_threads"
     fi
+    if [[ -v CH_TEST_DISK_PREP_JOBS ]] &&
+        [[ ! "$CH_TEST_DISK_PREP_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+        die "Disk preparation job count must be a positive integer: $CH_TEST_DISK_PREP_JOBS"
+    fi
 
     if [[ "$hypervisor" = "mshv" ]]; then
         exported_device="/dev/mshv"
@@ -562,6 +566,7 @@ cmd_tests() {
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
             --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
             --env CUBE_PVM_ENABLE \
+            --env CH_TEST_DISK_PREP_JOBS \
             "$CTR_IMAGE" \
             ./scripts/run_integration_tests_"$(uname -m)".sh "$@" || fix_dir_perms $? || exit $?
     fi
@@ -649,6 +654,7 @@ cmd_tests() {
             --env CARGO_NET_OFFLINE="$CH_OFFLINE" \
             --env CH_CARGO_TARGET_DIR="$CTR_CLH_CARGO_TARGET" \
             --env CUBE_PVM_ENABLE \
+            --env CH_TEST_DISK_PREP_JOBS \
             "$CTR_IMAGE" \
             "./scripts/$live_migration_script" "${live_migration_args[@]}" || fix_dir_perms $? || exit $?
     fi

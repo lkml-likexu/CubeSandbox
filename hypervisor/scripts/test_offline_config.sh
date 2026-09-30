@@ -84,6 +84,7 @@ grep -q 'missing' "$TMP_DIR/offline.out"
 cat > "$TMP_DIR/bin/docker" <<'EOF'
 #!/bin/bash
 printf 'CUBE_PVM_ENABLE=%s\n' "${CUBE_PVM_ENABLE-<unset>}" >> "$DOCKER_LOG"
+printf 'CH_TEST_DISK_PREP_JOBS=%s\n' "${CH_TEST_DISK_PREP_JOBS-<unset>}" >> "$DOCKER_LOG"
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 if [ "$1" = "save" ]; then
     shift
@@ -119,6 +120,12 @@ grep -q -- '--env CARGO_NET_OFFLINE=true' "$DOCKER_LOG"
 grep -q -- '--env CUBE_PVM_ENABLE' "$DOCKER_LOG"
 if grep -q -- '--env CUBE_PVM_ENABLE=' "$DOCKER_LOG"; then
     echo "unset PVM marker unexpectedly received a value" >&2
+    exit 1
+fi
+grep -q '^CH_TEST_DISK_PREP_JOBS=<unset>$' "$DOCKER_LOG"
+grep -q -- '--env CH_TEST_DISK_PREP_JOBS' "$DOCKER_LOG"
+if grep -q -- '--env CH_TEST_DISK_PREP_JOBS=' "$DOCKER_LOG"; then
+    echo "unset disk preparation job count unexpectedly received a value" >&2
     exit 1
 fi
 
@@ -250,6 +257,19 @@ grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --test-threads 3' "$DO
 CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
     "$SCRIPT_DIR/dev_cli.sh" tests --integration --test-threads 7 --offline
 grep -q 'run_integration_tests_x86_64.sh --hypervisor kvm --test-threads 7' "$DOCKER_LOG"
+
+: > "$DOCKER_LOG"
+CH_TEST_DISK_PREP_JOBS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
+grep -q '^CH_TEST_DISK_PREP_JOBS=3$' "$DOCKER_LOG"
+grep -q -- '--env CH_TEST_DISK_PREP_JOBS' "$DOCKER_LOG"
+
+if CH_TEST_DISK_PREP_JOBS=0 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline >"$TMP_DIR/disk-prep-jobs.out" 2>&1; then
+    echo "zero disk preparation job count unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -q 'Disk preparation job count must be a positive integer: 0' "$TMP_DIR/disk-prep-jobs.out"
 
 : > "$DOCKER_LOG"
 CH_TEST_THREADS=3 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
