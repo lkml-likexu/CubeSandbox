@@ -1126,8 +1126,9 @@ impl Guest {
     pub fn start_vsock_passthrough_fd_listener(&self) {
         // Listen from guest on vsock CID=3 PORT=16
         self.ssh_command(
-            "rm -f vsock_passfd_log vsock_passfd_socat.log vsock_passfd_socat.pid; sudo sh -c \
-             'socat SOCKET-LISTEN:40:0:x00x00x10x00x00x00x03x00x00x00x00x00x00x00,fork \
+            "sudo sh -c 'rm -f vsock_passfd_log vsock_passfd_socat.log \
+             vsock_passfd_socat.pid; \
+             socat SOCKET-LISTEN:40:0:x00x00x10x00x00x00x03x00x00x00x00x00x00x00,fork \
              SYSTEM:\"head -n 1 >> vsock_passfd_log; printf GuestReply\" \
              > vsock_passfd_socat.log 2>&1 & pid=$!; echo $pid > vsock_passfd_socat.pid; \
              sleep 1; kill -0 $pid'",
