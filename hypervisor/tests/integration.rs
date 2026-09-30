@@ -6961,85 +6961,6 @@ mod common_parallel {
     }
 
     #[test]
-    fn test_watchdog() {
-        skip_if_pvm!(
-            "PVM guest kernel has no virtio-watchdog driver (CONFIG_VIRTIO_WDT not enabled)"
-        );
-
-        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
-        let guest = Guest::new(Box::new(focal));
-        let api_socket = temp_api_path(&guest.tmp_dir);
-
-        let kernel_path = direct_kernel_boot_path();
-
-        let mut cmd = GuestCommand::new(&guest);
-        cmd.args(["--cpus", "boot=1"])
-            .args(["--memory", "size=512M"])
-            .args(["--kernel", kernel_path.to_str().unwrap()])
-            .args(["--cmdline", DIRECT_KERNEL_BOOT_CMDLINE])
-            .default_disks()
-            .args(["--net", guest.default_net_string().as_str()])
-            .args(["--watchdog"])
-            .args(["--api-socket", &api_socket])
-            .capture_output();
-
-        let mut child = cmd.spawn().unwrap();
-
-        let r = std::panic::catch_unwind(|| {
-            guest.wait_vm_boot(None).unwrap();
-
-            let mut expected_reboot_count = 1;
-
-            // Enable the watchdog with a 15s timeout
-            enable_guest_watchdog(&guest, 15);
-
-            // Reboot and check that systemd has activated the watchdog
-            guest.ssh_command("sudo reboot").unwrap();
-            guest.wait_vm_boot(None).unwrap();
-            expected_reboot_count += 1;
-            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
-            assert_eq!(
-                guest
-                    .ssh_command("sudo journalctl | grep -c -- \"Watchdog started\"")
-                    .unwrap()
-                    .trim()
-                    .parse::<u32>()
-                    .unwrap_or_default(),
-                2
-            );
-
-            // Allow some normal time to elapse to check we don't get spurious reboots
-            thread::sleep(std::time::Duration::new(40, 0));
-            // Check no reboot
-            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
-
-            // Trigger a panic (sync first). We need to do this inside a screen with a delay so the SSH command returns.
-            guest.ssh_command("screen -dmS reboot sh -c \"sleep 5; echo s | tee /proc/sysrq-trigger; echo c | sudo tee /proc/sysrq-trigger\"").unwrap();
-            // Allow some time for the watchdog to trigger (max 30s) and reboot to happen
-            guest.wait_vm_boot(Some(50)).unwrap();
-            // Check a reboot is triggerred by the watchdog
-            expected_reboot_count += 1;
-            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                // Now pause the VM and remain offline for 30s
-                assert!(remote_command(&api_socket, "pause", None));
-                thread::sleep(std::time::Duration::new(30, 0));
-                assert!(remote_command(&api_socket, "resume", None));
-
-                // Check no reboot
-                assert_eq!(get_reboot_count(&guest), expected_reboot_count);
-            }
-        });
-
-        kill_child(&mut child);
-        let output = child.wait_with_output().unwrap();
-
-        handle_child_output(r, &output);
-    }
-
-    #[test]
     fn test_tap_from_fd() {
         let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
         let guest = Guest::new(Box::new(focal));
@@ -7759,6 +7680,85 @@ mod common_sequential {
     use vmm::vm_config::{DiskConfig, FsConfig, NetConfig, PmemConfig, VsockConfig};
 
     use crate::*;
+
+    #[test]
+    fn test_watchdog() {
+        skip_if_pvm!(
+            "PVM guest kernel has no virtio-watchdog driver (CONFIG_VIRTIO_WDT not enabled)"
+        );
+
+        let focal = UbuntuDiskConfig::new(FOCAL_IMAGE_NAME.to_string());
+        let guest = Guest::new(Box::new(focal));
+        let api_socket = temp_api_path(&guest.tmp_dir);
+
+        let kernel_path = direct_kernel_boot_path();
+
+        let mut cmd = GuestCommand::new(&guest);
+        cmd.args(["--cpus", "boot=1"])
+            .args(["--memory", "size=512M"])
+            .args(["--kernel", kernel_path.to_str().unwrap()])
+            .args(["--cmdline", DIRECT_KERNEL_BOOT_CMDLINE])
+            .default_disks()
+            .args(["--net", guest.default_net_string().as_str()])
+            .args(["--watchdog"])
+            .args(["--api-socket", &api_socket])
+            .capture_output();
+
+        let mut child = cmd.spawn().unwrap();
+
+        let r = std::panic::catch_unwind(|| {
+            guest.wait_vm_boot(None).unwrap();
+
+            let mut expected_reboot_count = 1;
+
+            // Enable the watchdog with a 15s timeout
+            enable_guest_watchdog(&guest, 15);
+
+            // Reboot and check that systemd has activated the watchdog
+            guest.ssh_command("sudo reboot").unwrap();
+            guest.wait_vm_boot(None).unwrap();
+            expected_reboot_count += 1;
+            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
+            assert_eq!(
+                guest
+                    .ssh_command("sudo journalctl | grep -c -- \"Watchdog started\"")
+                    .unwrap()
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or_default(),
+                2
+            );
+
+            // Allow some normal time to elapse to check we don't get spurious reboots
+            thread::sleep(std::time::Duration::new(40, 0));
+            // Check no reboot
+            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
+
+            // Trigger a panic after a delay so the SSH command returns first.
+            guest.ssh_command("nohup sh -c \"sleep 5; echo s | sudo tee /proc/sysrq-trigger; echo c | sudo tee /proc/sysrq-trigger\" >/tmp/watchdog-reboot.log 2>&1 </dev/null &").unwrap();
+            // Allow some time for the watchdog to trigger (max 30s) and reboot to happen
+            guest.wait_vm_boot(Some(50)).unwrap();
+            // Check a reboot is triggerred by the watchdog
+            expected_reboot_count += 1;
+            assert_eq!(get_reboot_count(&guest), expected_reboot_count);
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                // Now pause the VM and remain offline for 30s
+                assert!(remote_command(&api_socket, "pause", None));
+                thread::sleep(std::time::Duration::new(30, 0));
+                assert!(remote_command(&api_socket, "resume", None));
+
+                // Check no reboot
+                assert_eq!(get_reboot_count(&guest), expected_reboot_count);
+            }
+        });
+
+        kill_child(&mut child);
+        let output = child.wait_with_output().unwrap();
+
+        handle_child_output(r, &output);
+    }
 
     #[test]
     fn test_virtio_balloon_free_page_reporting() {
