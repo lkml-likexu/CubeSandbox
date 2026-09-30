@@ -9,8 +9,6 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
-const SECTOR_SIZE: u64 = 512;
-
 #[sorted]
 #[derive(Error, Debug)]
 pub enum VhdxIoError {
@@ -18,6 +16,8 @@ pub enum VhdxIoError {
     InvalidBatEntryState,
     #[error("Invalid BAT entry count")]
     InvalidBatIndex,
+    #[error("Invalid buffer size")]
+    InvalidBufferSize,
     #[error("Invalid disk size")]
     InvalidDiskSize,
     #[error("Failed reading sector blocks from file {0}")]
@@ -58,7 +58,13 @@ impl Sector {
     ) -> Result<Sector> {
         let mut sector = Sector::default();
 
-        sector.bat_index = sector_index / disk_spec.sectors_per_block as u64;
+        let payload_index = sector_index / disk_spec.sectors_per_block as u64;
+        let bitmap_entries = payload_index
+            .checked_div(disk_spec.chunk_ratio)
+            .ok_or(VhdxIoError::InvalidBatIndex)?;
+        sector.bat_index = payload_index
+            .checked_add(bitmap_entries)
+            .ok_or(VhdxIoError::InvalidBatIndex)?;
         sector.block_offset = sector_index % disk_spec.sectors_per_block as u64;
         sector.free_sectors = disk_spec.sectors_per_block as u64 - sector.block_offset;
         if sector.free_sectors > sector_count {
@@ -108,19 +114,25 @@ pub fn read(
                 }
             };
 
+            let bytes =
+                usize::try_from(sector.free_bytes).map_err(|_| VhdxIoError::InvalidBufferSize)?;
+            let end = read_count
+                .checked_add(bytes)
+                .ok_or(VhdxIoError::InvalidBufferSize)?;
+            let destination = buf
+                .get_mut(read_count..end)
+                .ok_or(VhdxIoError::InvalidBufferSize)?;
+
             match bat_entry & vhdx_bat::BAT_STATE_BIT_MASK {
                 vhdx_bat::PAYLOAD_BLOCK_NOT_PRESENT
                 | vhdx_bat::PAYLOAD_BLOCK_UNDEFINED
                 | vhdx_bat::PAYLOAD_BLOCK_UNMAPPED
-                | vhdx_bat::PAYLOAD_BLOCK_ZERO => {}
+                | vhdx_bat::PAYLOAD_BLOCK_ZERO => destination.fill(0),
                 vhdx_bat::PAYLOAD_BLOCK_FULLY_PRESENT => {
                     f.seek(SeekFrom::Start(sector.file_offset))
                         .map_err(VhdxIoError::ReadSectorBlock)?;
-                    f.read_exact(
-                        &mut buf[read_count
-                            ..(read_count + (sector.free_sectors * SECTOR_SIZE) as usize)],
-                    )
-                    .map_err(VhdxIoError::ReadSectorBlock)?;
+                    f.read_exact(destination)
+                        .map_err(VhdxIoError::ReadSectorBlock)?;
                 }
                 vhdx_bat::PAYLOAD_BLOCK_PARTIALLY_PRESENT => {
                     return Err(VhdxIoError::UnsupportedMode);
@@ -131,7 +143,7 @@ pub fn read(
             };
             sector_count -= sector.free_sectors;
             sector_index += sector.free_sectors;
-            read_count = sector.free_bytes as usize;
+            read_count = end;
         };
     }
     Ok(read_count)
@@ -163,6 +175,15 @@ pub fn write(
                 }
             };
 
+            let bytes =
+                usize::try_from(sector.free_bytes).map_err(|_| VhdxIoError::InvalidBufferSize)?;
+            let end = write_count
+                .checked_add(bytes)
+                .ok_or(VhdxIoError::InvalidBufferSize)?;
+            let source = buf
+                .get(write_count..end)
+                .ok_or(VhdxIoError::InvalidBufferSize)?;
+
             match bat_entry & vhdx_bat::BAT_STATE_BIT_MASK {
                 vhdx_bat::PAYLOAD_BLOCK_NOT_PRESENT
                 | vhdx_bat::PAYLOAD_BLOCK_UNDEFINED
@@ -187,13 +208,9 @@ pub fn write(
                         break;
                     }
 
-                    f.seek(SeekFrom::Start(file_offset))
+                    f.seek(SeekFrom::Start(file_offset + sector.block_offset))
                         .map_err(VhdxIoError::ReadSectorBlock)?;
-                    f.write_all(
-                        &buf[write_count
-                            ..(write_count + (sector.free_sectors * SECTOR_SIZE) as usize)],
-                    )
-                    .map_err(VhdxIoError::ReadSectorBlock)?;
+                    f.write_all(source).map_err(VhdxIoError::ReadSectorBlock)?;
                 }
                 vhdx_bat::PAYLOAD_BLOCK_FULLY_PRESENT => {
                     if sector.file_offset < vhdx_metadata::BLOCK_SIZE_MIN as u64 {
@@ -202,11 +219,7 @@ pub fn write(
 
                     f.seek(SeekFrom::Start(sector.file_offset))
                         .map_err(VhdxIoError::ReadSectorBlock)?;
-                    f.write_all(
-                        &buf[write_count
-                            ..(write_count + (sector.free_sectors * SECTOR_SIZE) as usize)],
-                    )
-                    .map_err(VhdxIoError::ReadSectorBlock)?;
+                    f.write_all(source).map_err(VhdxIoError::ReadSectorBlock)?;
                 }
                 vhdx_bat::PAYLOAD_BLOCK_PARTIALLY_PRESENT => {
                     return Err(VhdxIoError::UnsupportedMode);
@@ -217,8 +230,146 @@ pub fn write(
             };
             sector_count -= sector.free_sectors;
             sector_index += sector.free_sectors;
-            write_count = sector.free_bytes as usize;
+            write_count = end;
         };
     }
     Ok(write_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read, write, DiskSpec, VhdxIoError};
+    use crate::vhdx_bat::{BatEntry, PAYLOAD_BLOCK_FULLY_PRESENT, PAYLOAD_BLOCK_UNMAPPED};
+    use std::fs::{self, File, OpenOptions};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+
+    const BLOCK_SIZE: u64 = 1 << 20;
+    const SECTOR_SIZE: usize = 512;
+
+    fn temporary_file(name: &str) -> (PathBuf, File) {
+        let path = std::env::temp_dir().join(format!(
+            "vhdx-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        (path, file)
+    }
+
+    fn disk_spec(image_size: u64) -> DiskSpec {
+        DiskSpec {
+            image_size,
+            block_size: BLOCK_SIZE as u32,
+            sectors_per_block: 2,
+            logical_sector_size: SECTOR_SIZE as u32,
+            chunk_ratio: u64::MAX,
+            ..DiskSpec::default()
+        }
+    }
+
+    fn present(offset: u64) -> BatEntry {
+        BatEntry(offset | PAYLOAD_BLOCK_FULLY_PRESENT)
+    }
+
+    #[test]
+    fn sector_accounts_for_bitmap_bat_entries() {
+        let spec = DiskSpec {
+            sectors_per_block: 2,
+            logical_sector_size: SECTOR_SIZE as u32,
+            chunk_ratio: 2,
+            ..DiskSpec::default()
+        };
+        let bat = [
+            present(BLOCK_SIZE),
+            present(2 * BLOCK_SIZE),
+            BatEntry(PAYLOAD_BLOCK_UNMAPPED),
+            present(3 * BLOCK_SIZE),
+        ];
+
+        let sector = super::Sector::new(&spec, &bat, 4, 1).unwrap();
+        assert_eq!(sector.bat_index, 3);
+        assert_eq!(sector.file_offset, 3 * BLOCK_SIZE);
+    }
+
+    #[test]
+    fn read_advances_across_present_and_unmapped_blocks() {
+        let (path, mut file) = temporary_file("read-blocks");
+        file.set_len(4 * BLOCK_SIZE).unwrap();
+        file.seek(SeekFrom::Start(BLOCK_SIZE + SECTOR_SIZE as u64))
+            .unwrap();
+        file.write_all(&vec![b'a'; SECTOR_SIZE]).unwrap();
+        file.seek(SeekFrom::Start(3 * BLOCK_SIZE)).unwrap();
+        file.write_all(&vec![b'c'; SECTOR_SIZE]).unwrap();
+
+        let spec = disk_spec(4 * BLOCK_SIZE);
+        let bat = [
+            present(BLOCK_SIZE),
+            BatEntry(PAYLOAD_BLOCK_UNMAPPED),
+            present(3 * BLOCK_SIZE),
+        ];
+        let mut buf = vec![b'x'; 4 * SECTOR_SIZE];
+
+        assert_eq!(
+            read(&mut file, &mut buf, &spec, &bat, 1, 4).unwrap(),
+            buf.len()
+        );
+        assert_eq!(&buf[..SECTOR_SIZE], vec![b'a'; SECTOR_SIZE]);
+        assert_eq!(&buf[SECTOR_SIZE..3 * SECTOR_SIZE], vec![0; 2 * SECTOR_SIZE]);
+        assert_eq!(&buf[3 * SECTOR_SIZE..], vec![b'c'; SECTOR_SIZE]);
+
+        drop(file);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn write_advances_across_payload_blocks() {
+        let (path, mut file) = temporary_file("write-blocks");
+        file.set_len(3 * BLOCK_SIZE).unwrap();
+        let mut spec = disk_spec(3 * BLOCK_SIZE);
+        let mut bat = [present(BLOCK_SIZE), present(2 * BLOCK_SIZE)];
+        let mut buf = vec![b'a'; SECTOR_SIZE];
+        buf.extend(vec![b'b'; 2 * SECTOR_SIZE]);
+
+        assert_eq!(
+            write(&mut file, &buf, &mut spec, 0, &mut bat, 1, 3).unwrap(),
+            buf.len()
+        );
+
+        let mut first = vec![0; SECTOR_SIZE];
+        file.seek(SeekFrom::Start(BLOCK_SIZE + SECTOR_SIZE as u64))
+            .unwrap();
+        file.read_exact(&mut first).unwrap();
+        let mut second = vec![0; 2 * SECTOR_SIZE];
+        file.seek(SeekFrom::Start(2 * BLOCK_SIZE)).unwrap();
+        file.read_exact(&mut second).unwrap();
+        assert_eq!(first, vec![b'a'; SECTOR_SIZE]);
+        assert_eq!(second, vec![b'b'; 2 * SECTOR_SIZE]);
+
+        drop(file);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_buffers_smaller_than_the_sector_range() {
+        let (path, mut file) = temporary_file("short-buffer");
+        file.set_len(2 * BLOCK_SIZE).unwrap();
+        let spec = disk_spec(2 * BLOCK_SIZE);
+        let bat = [present(BLOCK_SIZE)];
+        let mut buf = vec![0; SECTOR_SIZE - 1];
+
+        assert!(matches!(
+            read(&mut file, &mut buf, &spec, &bat, 0, 1),
+            Err(VhdxIoError::InvalidBufferSize)
+        ));
+
+        drop(file);
+        fs::remove_file(path).unwrap();
+    }
 }

@@ -93,7 +93,7 @@ impl Read for Vhdx {
             div_round_up!(buf.len() as u64, self.disk_spec.logical_sector_size as u64);
         let sector_index = self.current_offset / self.disk_spec.logical_sector_size as u64;
 
-        vhdx_io::read(
+        let read_count = vhdx_io::read(
             &mut self.file,
             buf,
             &self.disk_spec,
@@ -109,7 +109,14 @@ impl Read for Vhdx {
                     sector_count, sector_index, e
                 ),
             )
-        })
+        })?;
+        self.current_offset = self
+            .current_offset
+            .checked_add(read_count as u64)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset overflow")
+            })?;
+        Ok(read_count)
     }
 }
 
@@ -135,7 +142,7 @@ impl Write for Vhdx {
             })?;
         }
 
-        vhdx_io::write(
+        let write_count = vhdx_io::write(
             &mut self.file,
             buf,
             &mut self.disk_spec,
@@ -152,7 +159,14 @@ impl Write for Vhdx {
                     sector_count, sector_index, e
                 ),
             )
-        })
+        })?;
+        self.current_offset = self
+            .current_offset
+            .checked_add(write_count as u64)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset overflow")
+            })?;
+        Ok(write_count)
     }
 }
 
