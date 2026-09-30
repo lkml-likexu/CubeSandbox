@@ -58,6 +58,7 @@ make cubemaster
 make cubelet
 make agent
 make shim
+make hypervisor
 
 # Remove local Go/Rust build artifacts (not global caches)
 make clean
