@@ -45,6 +45,7 @@ use vmm_sys_util::eventfd::EventFd;
 
 const SECTOR_SHIFT: u8 = 9;
 pub const SECTOR_SIZE: u64 = 0x01 << SECTOR_SHIFT;
+const DIRECT_IO_ALIGNMENT: usize = 4096;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -195,6 +196,36 @@ pub struct AlignedOperation {
     aligned_ptr: u64,
     size: usize,
     layout: Layout,
+}
+
+impl AlignedOperation {
+    fn new(origin_ptr: *mut u8, size: usize, copy_source: bool) -> io::Result<Self> {
+        let layout = Layout::from_size_align(size, DIRECT_IO_ALIGNMENT).unwrap();
+        // Safe because the layout has non-zero size.
+        let aligned_ptr = unsafe { alloc_zeroed(layout) };
+        if aligned_ptr.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        if copy_source {
+            // Safe because both buffers are valid for size bytes.
+            unsafe { std::ptr::copy(origin_ptr, aligned_ptr, size) };
+        }
+
+        Ok(Self {
+            origin_ptr: origin_ptr as u64,
+            aligned_ptr: aligned_ptr as u64,
+            size,
+            layout,
+        })
+    }
+}
+
+impl Drop for AlignedOperation {
+    fn drop(&mut self) {
+        // Safe because aligned_ptr was allocated with this layout.
+        unsafe { dealloc(self.aligned_ptr as *mut u8, self.layout) }
+    }
 }
 
 #[derive(Debug)]
@@ -392,33 +423,18 @@ impl Request {
             // In case it's not properly aligned, an intermediate buffer is
             // created with the correct alignment, and a copy from/to the
             // origin buffer is performed, depending on the type of operation.
-            let iov_base = if (origin_ptr.as_ptr() as u64) % SECTOR_SIZE != 0 {
-                let layout =
-                    Layout::from_size_align(*data_len as usize, SECTOR_SIZE as usize).unwrap();
-                // Safe because layout has non-zero size
-                let aligned_ptr = unsafe { alloc_zeroed(layout) };
-                if aligned_ptr.is_null() {
-                    return Err(ExecuteError::TemporaryBufferAllocation(
-                        io::Error::last_os_error(),
-                    ));
-                }
-
-                // We need to perform the copy beforehand in case we're writing
-                // data out.
-                if request_type == RequestType::Out {
-                    // Safe because destination buffer has been allocated with
-                    // the proper size.
-                    unsafe { std::ptr::copy(origin_ptr.as_ptr(), aligned_ptr, *data_len as usize) };
-                }
+            let iov_base = if (origin_ptr.as_ptr() as usize) % DIRECT_IO_ALIGNMENT != 0 {
+                let operation = AlignedOperation::new(
+                    origin_ptr.as_ptr() as *mut u8,
+                    *data_len as usize,
+                    request_type == RequestType::Out,
+                )
+                .map_err(ExecuteError::TemporaryBufferAllocation)?;
+                let aligned_ptr = operation.aligned_ptr;
 
                 // Store both origin and aligned pointers for complete_async()
                 // to process them.
-                self.aligned_operations.push(AlignedOperation {
-                    origin_ptr: origin_ptr.as_ptr() as u64,
-                    aligned_ptr: aligned_ptr as u64,
-                    size: *data_len as usize,
-                    layout,
-                });
+                self.aligned_operations.push(operation);
 
                 aligned_ptr as *mut libc::c_void
             } else {
@@ -489,16 +505,6 @@ impl Request {
                     )
                 };
             }
-
-            // Free the temporary aligned buffer.
-            // Safe because aligned_ptr was allocated by alloc_zeroed with the same
-            // layout
-            unsafe {
-                dealloc(
-                    aligned_operation.aligned_ptr as *mut u8,
-                    aligned_operation.layout,
-                )
-            };
         }
 
         Ok(())
@@ -741,7 +747,8 @@ pub enum ImageType {
 
 #[cfg(test)]
 mod tests {
-    use super::AsyncAdaptor;
+    use super::{AlignedOperation, AsyncAdaptor, Request, RequestType, DIRECT_IO_ALIGNMENT};
+    use std::alloc::{alloc_zeroed, dealloc, Layout};
     use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
     use std::sync::{Mutex, MutexGuard};
     use vmm_sys_util::eventfd::EventFd;
@@ -826,6 +833,63 @@ mod tests {
             iov_base: buf.as_ptr().cast_mut().cast(),
             iov_len: buf.len(),
         }
+    }
+
+    #[test]
+    fn test_aligned_operation_uses_direct_io_alignment_and_copies_source() {
+        let layout = Layout::from_size_align(DIRECT_IO_ALIGNMENT * 2, DIRECT_IO_ALIGNMENT).unwrap();
+        // Safe because the layout has non-zero size.
+        let allocation = unsafe { alloc_zeroed(layout) };
+        assert!(!allocation.is_null());
+        // This pointer is sector aligned but deliberately not 4 KiB aligned.
+        let origin = unsafe { allocation.add(512) };
+        let expected = vec![0x5a; 512];
+        // Safe because the allocation has at least 1024 accessible bytes.
+        unsafe { std::ptr::copy(expected.as_ptr(), origin, expected.len()) };
+
+        let operation = AlignedOperation::new(origin, expected.len(), true).unwrap();
+        assert_eq!(operation.aligned_ptr as usize % DIRECT_IO_ALIGNMENT, 0);
+        // Safe because the aligned allocation is valid for expected.len() bytes.
+        let copied = unsafe {
+            std::slice::from_raw_parts(operation.aligned_ptr as *const u8, expected.len())
+        };
+        assert_eq!(copied, expected);
+
+        let operation_ptr = operation.aligned_ptr;
+        let mut request = Request {
+            request_type: RequestType::Out,
+            sector: 0,
+            data_descriptors: Vec::new(),
+            status_addr: vm_memory::GuestAddress(0),
+            writeback: true,
+            aligned_operations: vec![operation],
+        };
+        request.complete_async().unwrap();
+        assert!(request.aligned_operations.is_empty());
+        assert_ne!(operation_ptr, allocation as u64);
+        // Safe because this matches the original allocation.
+        unsafe { dealloc(allocation, layout) };
+    }
+
+    #[test]
+    fn test_aligned_operation_copies_read_data_back() {
+        let mut origin = vec![0; 512];
+        let operation = AlignedOperation::new(origin.as_mut_ptr(), origin.len(), false).unwrap();
+        // Safe because the aligned allocation is valid for origin.len() bytes.
+        unsafe {
+            std::ptr::write_bytes(operation.aligned_ptr as *mut u8, 0xa5, origin.len());
+        }
+
+        let mut request = Request {
+            request_type: RequestType::In,
+            sector: 0,
+            data_descriptors: Vec::new(),
+            status_addr: vm_memory::GuestAddress(0),
+            writeback: true,
+            aligned_operations: vec![operation],
+        };
+        request.complete_async().unwrap();
+        assert_eq!(origin, vec![0xa5; 512]);
     }
 
     #[test]

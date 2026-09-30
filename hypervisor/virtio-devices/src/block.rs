@@ -299,9 +299,9 @@ impl BlockEpollHandler {
                 .request_list
                 .remove(&desc_index)
                 .ok_or(Error::MissingEntryRequestList)?;
-            request.complete_async().map_err(Error::RequestCompleting)?;
 
             let (status, len) = if result >= 0 {
+                request.complete_async().map_err(Error::RequestCompleting)?;
                 match request.request_type {
                     RequestType::In => {
                         for (_, data_len) in &request.data_descriptors {
