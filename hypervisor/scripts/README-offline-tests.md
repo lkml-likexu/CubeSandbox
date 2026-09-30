@@ -165,6 +165,24 @@ CH_WORKLOADS_DIR=/srv/cloud-hypervisor-workloads
 
 `CUBESANDBOX_DIR` 默认为当前 `dev_cli.sh` 所在的 CubeSandbox 根目录；`CH_WORKLOADS_DIR` 默认为 `$HOME/workloads`。这些变量适用于 Bundle 准备和测试执行，容器内仍分别挂载到 `/cloud-hypervisor` 与 `/root/workloads`。
 
+## 运行时使用自定义 Guest Kernel
+
+普通 integration tests 可通过 `CH_CUSTOM_KERNEL` 选择宿主机上的自定义 direct-boot kernel，无需替换 `CH_WORKLOADS_DIR` 中的 `vmlinux` 或 `Image`：
+
+```bash
+CH_CUSTOM_KERNEL=/srv/kernels/test-vmlinux \
+  ./hypervisor/scripts/dev_cli.sh tests --integration
+
+CH_CUSTOM_KERNEL=/srv/kernels/test-vmlinux \
+  ./hypervisor/scripts/dev_cli.sh tests --integration --offline
+```
+
+非空值必须是可读普通文件的绝对路径。脚本会解析符号链接，解析后的实际路径不能包含逗号、双引号或换行符，并将实际文件只读挂载为容器内的 `/root/workloads/.custom-kernel`；不会复制、覆盖或持久化到 workload cache。未设置或设置为空时，x86_64 仍使用 `/root/workloads/vmlinux`，aarch64 仍使用 `/root/workloads/Image`。若 cache 或 Bundle 中同时存在默认内核，运行时 `CH_CUSTOM_KERNEL` 对 direct boot 优先。
+
+`--offline` 禁止下载，但允许只读挂载本机文件。因此自定义 kernel 可以位于解压 Bundle 之外，不过需要单独传输到离线主机，不会进入 Bundle 的 `MANIFEST` 或 `SHA256SUMS`。`CH_X86_VMLINUX_FILE` 仅用于 `--prepare-offline-bundle`，会把 x86 kernel 作为 `workloads/vmlinux` 写入新 Bundle；它与运行时选择变量用途不同。
+
+在 aarch64 上，`CH_CUSTOM_KERNEL` 只替换 direct-boot `Image`。测试仍需要 `Image.gz` 来生成或使用磁盘/固件启动制品，因此并非所有 ARM guest 都会运行自定义 kernel。该变量只应用于普通 `--integration`，不影响 `--integration-live-migration`、SGX、VFIO、Windows、rate-limiter 或 metrics lane。
+
 ## 配置开发容器 OCI 镜像
 
 默认使用 `ghcr.io/cloud-hypervisor/cloud-hypervisor:20240507-0`。可通过环境变量指定内部 Registry 或其他兼容镜像：
