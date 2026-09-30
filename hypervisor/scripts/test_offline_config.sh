@@ -86,6 +86,7 @@ cat > "$TMP_DIR/bin/docker" <<'EOF'
 printf 'CUBE_PVM_ENABLE=%s\n' "${CUBE_PVM_ENABLE-<unset>}" >> "$DOCKER_LOG"
 printf 'CH_TEST_DISK_PREP_JOBS=%s\n' "${CH_TEST_DISK_PREP_JOBS-<unset>}" >> "$DOCKER_LOG"
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+printf 'ARG=%s\n' "$@" >> "$DOCKER_LOG"
 if [ "$1" = "save" ]; then
     shift
     while [ $# -gt 0 ]; do
@@ -128,6 +129,75 @@ if grep -q -- '--env CH_TEST_DISK_PREP_JOBS=' "$DOCKER_LOG"; then
     echo "unset disk preparation job count unexpectedly received a value" >&2
     exit 1
 fi
+if grep -q 'CH_CUSTOM_KERNEL' "$DOCKER_LOG"; then
+    echo "unset custom kernel unexpectedly reached Docker" >&2
+    exit 1
+fi
+
+: > "$DOCKER_LOG"
+CH_CUSTOM_KERNEL= HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
+if grep -q 'CH_CUSTOM_KERNEL' "$DOCKER_LOG"; then
+    echo "empty custom kernel unexpectedly reached Docker" >&2
+    exit 1
+fi
+
+CUSTOM_KERNEL_DIR="$TMP_DIR/custom kernels"
+mkdir -p "$CUSTOM_KERNEL_DIR"
+printf custom-kernel > "$CUSTOM_KERNEL_DIR/kernel image"
+ln -s "$CUSTOM_KERNEL_DIR/kernel image" "$TMP_DIR/custom-kernel-link"
+printf cached-kernel > "$TMP_DIR/home/workloads/vmlinux"
+: > "$DOCKER_LOG"
+CH_CUSTOM_KERNEL="$TMP_DIR/custom-kernel-link" \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
+canonical_kernel=$(realpath -e "$CUSTOM_KERNEL_DIR/kernel image")
+grep -F -q "ARG=type=bind,source=$canonical_kernel,destination=/root/workloads/.custom-kernel,readonly" "$DOCKER_LOG"
+grep -q '^ARG=CH_CUSTOM_KERNEL=/root/workloads/.custom-kernel$' "$DOCKER_LOG"
+test "$(cat "$TMP_DIR/home/workloads/vmlinux")" = cached-kernel
+
+: > "$DOCKER_LOG"
+CH_CUSTOM_KERNEL="$CUSTOM_KERNEL_DIR/kernel image" \
+    MOCK_ARCH=aarch64 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline
+grep -F -q "ARG=type=bind,source=$canonical_kernel,destination=/root/workloads/.custom-kernel,readonly" "$DOCKER_LOG"
+grep -q 'run_integration_tests_aarch64.sh' "$DOCKER_LOG"
+
+printf comma-kernel > "$TMP_DIR/kernel,invalid"
+for invalid_kernel in relative-kernel "$TMP_DIR/missing-kernel" "$TMP_DIR" "$TMP_DIR/kernel,invalid"; do
+    : > "$DOCKER_LOG"
+    if CH_CUSTOM_KERNEL="$invalid_kernel" \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+        "$SCRIPT_DIR/dev_cli.sh" tests --integration --offline \
+        >"$TMP_DIR/custom-kernel-error.out" 2>&1; then
+        echo "invalid custom kernel unexpectedly succeeded: $invalid_kernel" >&2
+        exit 1
+    fi
+    grep -q 'CH_CUSTOM_KERNEL.*must\|CH_CUSTOM_KERNEL contains unsupported' "$TMP_DIR/custom-kernel-error.out"
+    test ! -s "$DOCKER_LOG"
+done
+
+: > "$DOCKER_LOG"
+CH_CUSTOM_KERNEL=relative-kernel \
+    HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+    "$SCRIPT_DIR/dev_cli.sh" tests --unit --offline
+grep -q 'run_unit_tests.sh' "$DOCKER_LOG"
+if grep -q 'CH_CUSTOM_KERNEL' "$DOCKER_LOG"; then
+    echo "unit tests unexpectedly received the custom kernel" >&2
+    exit 1
+fi
+
+for isolated_lane in --integration-sgx --integration-vfio --integration-windows \
+    --integration-live-migration --integration-rate-limiter --metrics; do
+    : > "$DOCKER_LOG"
+    CH_CUSTOM_KERNEL=relative-kernel \
+        HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
+        "$SCRIPT_DIR/dev_cli.sh" tests "$isolated_lane" --offline
+    if grep -q 'CH_CUSTOM_KERNEL' "$DOCKER_LOG"; then
+        echo "$isolated_lane unexpectedly received the custom kernel" >&2
+        exit 1
+    fi
+done
 
 : > "$DOCKER_LOG"
 CUBE_PVM_ENABLE=0 HOME="$TMP_DIR/home" DOCKER_RUNTIME="$TMP_DIR/bin/docker" \
@@ -316,6 +386,34 @@ fi
 grep -q 'VFIO_DIR=' "$SCRIPT_DIR/run_integration_tests_vfio.sh"
 grep -q 'Phase timing:' "$X86_RUNNER"
 
+X86_CUSTOM_HOME="$TMP_DIR/x86-custom-home"
+mkdir -p "$X86_CUSTOM_HOME/.cargo"
+: > "$X86_CUSTOM_HOME/.cargo/env"
+if (
+    cd "$SCRIPT_DIR/.."
+    HOME="$X86_CUSTOM_HOME" CH_OFFLINE=true \
+        ./scripts/run_integration_tests_x86_64.sh
+) >"$TMP_DIR/x86-default-offline.out" 2>&1; then
+    echo "incomplete x86 offline workloads unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -q '^  vmlinux$' "$TMP_DIR/x86-default-offline.out"
+
+if (
+    cd "$SCRIPT_DIR/.."
+    HOME="$X86_CUSTOM_HOME" CH_OFFLINE=true \
+        CH_CUSTOM_KERNEL=/root/workloads/.custom-kernel \
+        ./scripts/run_integration_tests_x86_64.sh
+) >"$TMP_DIR/x86-custom-offline.out" 2>&1; then
+    echo "incomplete x86 offline workloads unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -q 'Offline workloads missing' "$TMP_DIR/x86-custom-offline.out"
+if grep -q '^  vmlinux$' "$TMP_DIR/x86-custom-offline.out"; then
+    echo "custom kernel still requires the canonical x86 kernel" >&2
+    exit 1
+fi
+
 test "$(WORKLOADS_BASE_URL= workload_url kernel https://public.invalid/kernel)" = "https://public.invalid/kernel"
 printf '%s\n' unknown-artifact > "$WORKLOADS_DIR/.custom_x86_artifacts"
 if load_custom_x86_artifacts >"$TMP_DIR/custom-marker.out" 2>&1; then
@@ -400,6 +498,24 @@ fi
 grep -q 'Offline workloads missing' "$TMP_DIR/arm-offline.out"
 grep -q 'CLOUDHV_EFI.fd' "$TMP_DIR/arm-offline.out"
 grep -q 'spdk-nvme/nvmf_tgt' "$TMP_DIR/arm-offline.out"
+grep -q '^  Image$' "$TMP_DIR/arm-offline.out"
+
+if (
+    cd "$SCRIPT_DIR/.."
+    HOME="$TMP_DIR/arm-home" CH_OFFLINE=true CH_LIBC=gnu \
+        CH_CUSTOM_KERNEL=/root/workloads/.custom-kernel \
+        SPDK_INSTALL_DIR="$TMP_DIR/spdk-install" \
+        ./scripts/run_integration_tests_aarch64.sh --prepare-offline
+) >"$TMP_DIR/arm-custom-offline.out" 2>&1; then
+    echo "incomplete aarch64 offline workloads unexpectedly succeeded" >&2
+    exit 1
+fi
+if grep -q '^  Image$' "$TMP_DIR/arm-custom-offline.out"; then
+    echo "custom kernel still requires the canonical aarch64 Image" >&2
+    exit 1
+fi
+grep -q '^  Image.gz$' "$TMP_DIR/arm-custom-offline.out"
+
 if grep -q 'cargo build --all' "$TMP_DIR/arm-offline.out"; then
     echo "aarch64 offline preflight reached the Cargo build" >&2
     exit 1
@@ -420,7 +536,6 @@ for artifact in \
     jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
     alpine-minirootfs-aarch64.tar.gz \
     cloud-hypervisor-static-aarch64 \
-    Image \
     Image.gz \
     CLOUDHV_EFI.fd \
     virtiofsd \
@@ -486,6 +601,7 @@ export ARM_DERIVE_LOG="$TMP_DIR/arm-derive.log"
         HOME="$ARM_DERIVE_HOME" \
         CH_OFFLINE=true \
         CH_LIBC=gnu \
+        CH_CUSTOM_KERNEL=/root/workloads/.custom-kernel \
         WORKLOADS_DIR="$ARM_DERIVE_WORKLOADS" \
         SPDK_INSTALL_DIR="$TMP_DIR/arm-spdk-install" \
         ./scripts/run_integration_tests_aarch64.sh --prepare-offline
@@ -499,6 +615,11 @@ for artifact in \
     test -f "$ARM_DERIVE_WORKLOADS/$artifact"
 done
 test "$(cat "$ARM_DERIVE_WORKLOADS/focal-server-cloudimg-root/boot/vmlinuz")" = "$(cat "$ARM_DERIVE_WORKLOADS/Image.gz")"
+test ! -e "$ARM_DERIVE_WORKLOADS/Image"
+if grep -q 'linux-custom' "$ARM_DERIVE_LOG"; then
+    echo "custom kernel unexpectedly rebuilt the canonical aarch64 Image" >&2
+    exit 1
+fi
 test "$(grep -c 'qcow2 -O raw' "$ARM_DERIVE_LOG")" -eq 3
 grep -q '^cargo build --all --release .*--target-dir target' "$ARM_DERIVE_LOG"
 grep -q '^cargo test .*--no-run.*--target-dir target' "$ARM_DERIVE_LOG"
