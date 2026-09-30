@@ -1250,9 +1250,8 @@ impl DeviceManager {
         }
 
         #[cfg(target_arch = "x86_64")]
-        // WORKAROUND: force reset event into shutdown.
         self.add_legacy_devices(
-            self.exit_evt
+            self.reset_evt
                 .try_clone()
                 .map_err(DeviceManagerError::EventFd)?,
         )?;
@@ -1261,10 +1260,9 @@ impl DeviceManager {
         self.add_legacy_devices(&legacy_interrupt_manager)?;
 
         {
-            // WORKAROUND: force reset event into shutdown.
             self.ged_notification_device = self.add_acpi_devices(
                 &legacy_interrupt_manager,
-                self.exit_evt
+                self.reset_evt
                     .try_clone()
                     .map_err(DeviceManagerError::EventFd)?,
                 self.exit_evt

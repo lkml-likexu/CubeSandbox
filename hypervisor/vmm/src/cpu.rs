@@ -930,8 +930,7 @@ impl CpuManager {
         vcpu_thread_barrier: Arc<Barrier>,
         inserting: bool,
     ) -> Result<()> {
-        // WORKAROUND: force reset event into shutdown.
-        let reset_evt = self.exit_evt.try_clone().unwrap();
+        let reset_evt = self.reset_evt.try_clone().unwrap();
         let exit_evt = self.exit_evt.try_clone().unwrap();
         #[cfg(feature = "guest_debug")]
         let vm_debug_evt = self.vm_debug_evt.try_clone().unwrap();
@@ -1091,7 +1090,7 @@ impl CpuManager {
                                     VmExit::Ignore => {}
                                     VmExit::Hyperv => {}
                                     VmExit::Reset => {
-                                        error!("Shutdown because VmExit::Reset");
+                                        info!("VmExit::Reset");
                                         vcpu_run_interrupted.store(true, Ordering::SeqCst);
                                         reset_evt.write(1).unwrap();
                                         break;
