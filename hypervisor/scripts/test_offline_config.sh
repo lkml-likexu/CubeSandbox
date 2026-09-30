@@ -281,6 +281,20 @@ test "${#test_filters[@]}" -eq 1
 test "${test_filters[0]}" = "live_migration::live_migration_parallel::test_live_migration_basic"
 grep -q 'build_test_filters "live_migration::live_migration_parallel" "test_live_migration_basic"' \
     "$SCRIPT_DIR/run_integration_tests_x86_64.sh"
+X86_RUNNER="$SCRIPT_DIR/run_integration_tests_x86_64.sh"
+grep -q -- '--target "$BUILD_TARGET"' "$X86_RUNNER"
+grep -q -- '--target-dir "$CH_CARGO_TARGET_DIR"' "$X86_RUNNER"
+grep -q -- '--test integration' "$X86_RUNNER"
+grep -q 'run_integration_test()' "$X86_RUNNER"
+grep -q 'run_lib_integration_test()' "$X86_RUNNER"
+grep -q 'precompile_integration_test()' "$X86_RUNNER"
+grep -q 'precompile_lib_integration_test()' "$X86_RUNNER"
+if grep -q 'VFIO_DIR\|VFIO_DISK_IMAGE' "$X86_RUNNER"; then
+    echo "default integration runner still stages VFIO assets" >&2
+    exit 1
+fi
+grep -q 'VFIO_DIR=' "$SCRIPT_DIR/run_integration_tests_vfio.sh"
+grep -q 'Phase timing:' "$X86_RUNNER"
 
 test "$(WORKLOADS_BASE_URL= workload_url kernel https://public.invalid/kernel)" = "https://public.invalid/kernel"
 printf '%s\n' unknown-artifact > "$WORKLOADS_DIR/.custom_x86_artifacts"

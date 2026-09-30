@@ -6,6 +6,17 @@ source $(dirname "$0")/test-util.sh
 
 export BUILD_TARGET=${BUILD_TARGET-x86_64-unknown-linux-gnu}
 
+phase_start() {
+    PHASE_NAME="$1"
+    PHASE_STARTED_AT=$(date +%s)
+}
+
+phase_end() {
+    local finished_at
+    finished_at=$(date +%s)
+    echo "=== Phase timing: $PHASE_NAME=$((finished_at - PHASE_STARTED_AT))s ==="
+}
+
 # Clean up leftover temp dirs from previous test runs
 rm -rf /tmp/ch[A-Za-z]*
 
@@ -34,6 +45,7 @@ if [ "$hypervisor" = "mshv" ] ;  then
     features="--no-default-features --features mshv"
 fi
 
+phase_start "workload_preparation"
 cp scripts/sha1sums-x86_64 $WORKLOADS_DIR
 
 require_offline_workloads \
@@ -135,6 +147,8 @@ if [ ! -f "$ALPINE_INITRAMFS_IMAGE" ]; then
     popd
 fi
 
+phase_end
+phase_start "workload_checksum"
 CUSTOM_SHA1_EXCLUDES="$CUSTOM_X86_ARTIFACTS"
 case ",$CUSTOM_SHA1_EXCLUDES," in
 *,bionic-server-cloudimg-amd64.qcow2,*)
@@ -172,6 +186,8 @@ if [ $RES -ne 0 ]; then
     echo "sha1sum validation of images failed, remove invalid images to fix the issue."
     exit 1
 fi
+phase_end
+phase_start "remaining_fixture_preparation"
 
 # Build custom kernel based on virtio-pmem and virtio-fs upstream patches
 VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
@@ -216,17 +232,32 @@ if [ ! -d "$SHARED_DIR" ]; then
     echo "bar" > "$SHARED_DIR/file3" || exit 1
 fi
 
-VFIO_DIR="$WORKLOADS_DIR/vfio"
-VFIO_DISK_IMAGE="$WORKLOADS_DIR/vfio.img"
-rm -rf $VFIO_DIR $VFIO_DISK_IMAGE
-mkdir -p $VFIO_DIR
-cp $FOCAL_OS_RAW_IMAGE $VFIO_DIR
-cp $FW $VFIO_DIR
-cp $VMLINUX_IMAGE $VFIO_DIR || exit 1
-
+phase_end
+phase_start "release_build"
 BUILD_TARGET="$(uname -m)-unknown-linux-${CH_LIBC}"
 CH_CARGO_TARGET_DIR="${CH_CARGO_TARGET_DIR:-target}"
 export CARGO_TARGET_DIR="$CH_CARGO_TARGET_DIR"
+CARGO_INTEGRATION_ARGS=(
+    --target "$BUILD_TARGET"
+    --target-dir "$CH_CARGO_TARGET_DIR"
+    --test integration
+)
+
+run_integration_test() {
+    time cargo test $features "${CARGO_INTEGRATION_ARGS[@]}" -- "$@"
+}
+
+run_lib_integration_test() {
+    time cargo test $features --features lib_support "${CARGO_INTEGRATION_ARGS[@]}" -- "$@"
+}
+
+precompile_integration_test() {
+    cargo test $features "${CARGO_INTEGRATION_ARGS[@]}" --no-run
+}
+
+precompile_lib_integration_test() {
+    cargo test $features --features lib_support "${CARGO_INTEGRATION_ARGS[@]}" --no-run
+}
 
 cargo build --all --release $features --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
 strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor"
@@ -238,13 +269,13 @@ strip "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote"
 mkdir -p "$WORKLOADS_DIR/cube-release"
 cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$WORKLOADS_DIR/cube-release/cube-hypervisor" || exit 1
 
-# We always copy a fresh version of our binary for our L2 guest.
-cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/cube-hypervisor" "$VFIO_DIR"
-cp "$CH_CARGO_TARGET_DIR/$BUILD_TARGET/release/ch-remote" "$VFIO_DIR"
+phase_end
 
 if [ "$prepare_offline" = "true" ]; then
-    cargo test $features --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
-    cargo test $features --features lib_support --no-run --target "$BUILD_TARGET" --target-dir "$CH_CARGO_TARGET_DIR"
+    phase_start "offline_test_precompile"
+    precompile_integration_test
+    precompile_lib_integration_test
+    phase_end
     exit 0
 fi
 
@@ -287,7 +318,7 @@ if [ "$quick_mode" = "true" ]; then
     echo ""
     echo ">>> [Step 1/5] Priority 1: Boot & Lifecycle"
     build_test_filters "common_parallel" "$PRIORITY1_TESTS"
-    time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
+    run_integration_test --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
     RES=$?
 
     # Step 2: Priority 2 - Core I/O Devices (parallel)
@@ -295,7 +326,7 @@ if [ "$quick_mode" = "true" ]; then
         echo ""
         echo ">>> [Step 2/5] Priority 2: Core I/O Devices"
         build_test_filters "common_parallel" "$PRIORITY2_TESTS"
-        time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
+        run_integration_test --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -304,7 +335,7 @@ if [ "$quick_mode" = "true" ]; then
         echo ""
         echo ">>> [Step 3/5] Priority 3: Hotplug"
         build_test_filters "common_parallel" "$PRIORITY3_TESTS"
-        time cargo test $features -- --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
+        run_integration_test --exact --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -312,12 +343,12 @@ if [ "$quick_mode" = "true" ]; then
     if [ $RES -eq 0 ]; then
         echo ""
         echo ">>> [Step 4/5] Priority 4: Snapshot & Live Migration"
-        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} "common_sequential::test_snapshot_restore_basic"
+        run_integration_test --exact --test-threads=1 ${test_binary_args[*]} "common_sequential::test_snapshot_restore_basic"
         RES=$?
     fi
     if [ $RES -eq 0 ]; then
         build_test_filters "live_migration::live_migration_parallel" "test_live_migration_basic"
-        time cargo test $features -- --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+        run_integration_test --exact --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -326,7 +357,7 @@ if [ "$quick_mode" = "true" ]; then
         echo ""
         echo ">>> [Step 5/5] Priority 5: VMM Instance API (lib mode)"
         build_test_filters "vmm_instance" "$PRIORITY5_TESTS"
-        time cargo test $features --features lib_support -- --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+        run_lib_integration_test --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
         RES=$?
     fi
 
@@ -351,27 +382,35 @@ fi
 echo "=== Full mode: running all tests with $parallel_threads parallel threads ==="
 
 build_test_filters "common_parallel" "$test_filter"
-time cargo test $features -- --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
+phase_start "common_parallel"
+run_integration_test --test-threads="$parallel_threads" ${test_binary_args[*]} ${test_filters[*]}
 RES=$?
+phase_end
 
 if [ $RES -eq 0 ]; then
     build_test_filters "vmm_instance" "$test_filter"
-    time cargo test $features --features lib_support -- --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+    phase_start "vmm_instance"
+    run_lib_integration_test --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
     RES=$?
+    phase_end
 fi
 
 # Run some tests in sequence since the result could be affected by other tests
 # running in parallel.
 if [ $RES -eq 0 ]; then
     build_test_filters "common_sequential" "$test_filter"
-    time cargo test $features -- --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+    phase_start "common_sequential"
+    run_integration_test --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
     RES=$?
+    phase_end
 fi
 
 if [ $RES -eq 0 ]; then
     build_test_filters "compatibility" "$test_filter"
-    time cargo test $features -- --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
+    phase_start "compatibility"
+    run_integration_test --test-threads=1 ${test_binary_args[*]} ${test_filters[*]}
     RES=$?
+    phase_end
 fi
 
 exit $RES
