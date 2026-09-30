@@ -104,21 +104,23 @@ validate_aarch64_images() {
 }
 
 require_aarch64_offline_workloads() {
-    require_offline_workloads \
-        bionic-server-cloudimg-arm64.qcow2 \
-        focal-server-cloudimg-arm64-custom-20210929-0.qcow2 \
-        jammy-server-cloudimg-arm64-custom-20220329-0.qcow2 \
-        alpine-minirootfs-aarch64.tar.gz \
-        cloud-hypervisor-static-aarch64 \
-        Image \
-        Image.gz \
-        CLOUDHV_EFI.fd \
-        virtiofsd \
-        blk.img \
-        shared_dir/file1 \
-        shared_dir/file3 \
-        spdk-nvme/nvmf_tgt \
-        spdk-nvme/rpc.py || return 1
+    local offline_workloads=(
+        bionic-server-cloudimg-arm64.qcow2
+        focal-server-cloudimg-arm64-custom-20210929-0.qcow2
+        jammy-server-cloudimg-arm64-custom-20220329-0.qcow2
+        alpine-minirootfs-aarch64.tar.gz
+        cloud-hypervisor-static-aarch64
+        Image.gz
+        CLOUDHV_EFI.fd
+        virtiofsd
+        blk.img
+        shared_dir/file1
+        shared_dir/file3
+        spdk-nvme/nvmf_tgt
+        spdk-nvme/rpc.py
+    )
+    [ -n "${CH_CUSTOM_KERNEL:-}" ] || offline_workloads+=(Image)
+    require_offline_workloads "${offline_workloads[@]}" || return 1
 
     [ -d "$SPDK_DEPLOY_DIR/rpc" ] || {
         echo "Offline workload is missing: $SPDK_DEPLOY_DIR/rpc" >&2
@@ -230,7 +232,8 @@ update_workloads() {
         "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v26.0/$release_name" || return 1
     chmod +x "$WORKLOADS_DIR/$release_name"
 
-    if [ ! -f "$WORKLOADS_DIR/Image" ] || [ ! -f "$WORKLOADS_DIR/Image.gz" ]; then
+    if { [ -z "${CH_CUSTOM_KERNEL:-}" ] && [ ! -f "$WORKLOADS_DIR/Image" ]; } ||
+        [ ! -f "$WORKLOADS_DIR/Image.gz" ]; then
         build_custom_linux || return 1
     fi
 

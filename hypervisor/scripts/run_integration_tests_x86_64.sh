@@ -48,15 +48,17 @@ fi
 phase_start "workload_preparation"
 cp scripts/sha1sums-x86_64 $WORKLOADS_DIR
 
-require_offline_workloads \
-    hypervisor-fw \
-    CLOUDHV.fd \
-    bionic-server-cloudimg-amd64.qcow2 \
-    focal-server-cloudimg-amd64-custom-20210609-0.qcow2 \
-    jammy-server-cloudimg-amd64-custom-20220329-0.qcow2 \
-    alpine-minirootfs-x86_64.tar.gz \
-    vmlinux \
-    virtiofsd || exit 1
+offline_workloads=(
+    hypervisor-fw
+    CLOUDHV.fd
+    bionic-server-cloudimg-amd64.qcow2
+    focal-server-cloudimg-amd64-custom-20210609-0.qcow2
+    jammy-server-cloudimg-amd64-custom-20220329-0.qcow2
+    alpine-minirootfs-x86_64.tar.gz
+    virtiofsd
+)
+[ -n "${CH_CUSTOM_KERNEL:-}" ] || offline_workloads+=(vmlinux)
+require_offline_workloads "${offline_workloads[@]}" || exit 1
 
 FW="$WORKLOADS_DIR/hypervisor-fw"
 if [ ! -f "$FW" ] && [ -z "${WORKLOADS_BASE_URL:-}" ]; then
@@ -190,8 +192,9 @@ phase_end
 phase_start "remaining_fixture_preparation"
 
 # Build custom kernel based on virtio-pmem and virtio-fs upstream patches
-VMLINUX_IMAGE="$WORKLOADS_DIR/vmlinux"
-acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1
+if [ -z "${CH_CUSTOM_KERNEL:-}" ]; then
+    acquire_workload "vmlinux" "https://github.com/lisongqian/CubeSandbox/releases/download/vmlinux/vmlinux" || exit 1
+fi
 
 VIRTIOFSD="$WORKLOADS_DIR/virtiofsd"
 if [ -n "${WORKLOADS_BASE_URL:-}" ] || [ "${CH_OFFLINE:-false}" = "true" ]; then
@@ -300,7 +303,7 @@ if [ "$quick_mode" = "true" ]; then
     echo "=== Quick mode: running core smoke tests with $parallel_threads parallel threads ==="
 
     # Priority 1: Boot & Lifecycle
-    PRIORITY1_TESTS="test_focal_hypervisor_fw|test_direct_kernel_boot|test_multi_cpu|test_power_button|test_api_create_boot|test_api_shutdown|test_api_pause_resume"
+    PRIORITY1_TESTS="test_direct_kernel_boot_path_override|test_direct_kernel_boot_path_default|test_focal_hypervisor_fw|test_direct_kernel_boot|test_multi_cpu|test_power_button|test_api_create_boot|test_api_shutdown|test_api_pause_resume"
 
     # Priority 2: Core I/O Devices
     PRIORITY2_TESTS="test_virtio_block|test_virtio_net_ctrl_queue|test_native_virtio_fs_hotplug|test_virtio_vsock|test_virtio_console|test_serial_tty"

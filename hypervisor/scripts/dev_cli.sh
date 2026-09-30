@@ -28,6 +28,7 @@ CTR_CLH_ROOT_DIR="/cloud-hypervisor"
 CTR_CLH_CARGO_BUILT_DIR="${CTR_CLH_ROOT_DIR}/build"
 CTR_CLH_CARGO_TARGET="${CTR_CLH_CARGO_BUILT_DIR}/cargo_target"
 CTR_CH_WORKLOADS_DIR="/root/workloads"
+CTR_CH_CUSTOM_KERNEL="${CTR_CH_WORKLOADS_DIR}/.custom-kernel"
 
 # Container networking option
 CTR_CLH_NET="bridge"
@@ -36,6 +37,7 @@ APT_MIRROR_BASE="${APT_MIRROR_BASE:-}"
 WORKLOADS_BASE_URL="${WORKLOADS_BASE_URL:-}"
 CH_OFFLINE="${CH_OFFLINE:-false}"
 CH_TEST_THREADS="${CH_TEST_THREADS:-}"
+CH_CUSTOM_KERNEL="${CH_CUSTOM_KERNEL:-}"
 CH_CUSTOM_X86_ARTIFACTS=""
 CH_CUSTOM_AARCH64_ARTIFACTS=""
 
@@ -217,6 +219,37 @@ validate_host_paths() {
         die "CUBESANDBOX_DIR does not contain hypervisor/Cargo.toml: $CUBESANDBOX_DIR"
 }
 
+configure_integration_custom_kernel() {
+    integration_custom_kernel_args=()
+    local source="${CH_CUSTOM_KERNEL:-}"
+    [ -z "$source" ] && return
+
+    case "$source" in
+    /*) ;;
+    *) die "CH_CUSTOM_KERNEL must be an absolute path: $source" ;;
+    esac
+    if [ ! -f "$source" ] || [ ! -r "$source" ]; then
+        die "CH_CUSTOM_KERNEL must reference a readable regular file: $source"
+    fi
+
+    local resolved=()
+    mapfile -d '' -t resolved < <(realpath --zero -e -- "$source")
+    [ "${#resolved[@]}" -eq 1 ] || die "Cannot resolve CH_CUSTOM_KERNEL: $source"
+    source="${resolved[0]}"
+    if [ ! -f "$source" ] || [ ! -r "$source" ]; then
+        die "Resolved CH_CUSTOM_KERNEL must reference a readable regular file: $source"
+    fi
+    case "$source" in
+    *','* | *'"'* | *$'\r'* | *$'\n'*)
+        die "Resolved CH_CUSTOM_KERNEL contains unsupported mount characters: $source"
+        ;;
+    esac
+    integration_custom_kernel_args=(
+        --mount "type=bind,source=$source,destination=$CTR_CH_CUSTOM_KERNEL,readonly"
+        --env "CH_CUSTOM_KERNEL=$CTR_CH_CUSTOM_KERNEL"
+    )
+}
+
 validate_network_options() {
     if [ -n "$APT_MIRROR_BASE" ]; then
         validate_url "APT_MIRROR_BASE" "$APT_MIRROR_BASE"
@@ -289,6 +322,7 @@ cmd_help() {
     echo "        --test-threads N             Set concurrency for parallel test suites."
     echo "        --workloads-base-url URL     Fetch missing workloads from a flat internal artifact URL."
     echo "        --offline                    Use only the local container image, workloads, and Cargo cache."
+    echo "        CH_CUSTOM_KERNEL=/path       Use this host kernel for direct boot with --integration."
     echo "        --all                        Run all tests."
     echo ""
     echo "    build-container [--apt-mirror URL]"
@@ -525,6 +559,11 @@ cmd_tests() {
         die "No test type selected. Please use --help for help."
     fi
 
+    integration_custom_kernel_args=()
+    if [ "$integration" = true ]; then
+        configure_integration_custom_kernel
+    fi
+
     ensure_build_dir
     ensure_latest_ctr
 
@@ -559,6 +598,7 @@ cmd_tests() {
             --volume /dev:/dev \
             --volume "$CLH_ROOT_DIR:$CTR_CLH_ROOT_DIR" $exported_volumes \
             --volume "$CH_WORKLOADS_DIR:$CTR_CH_WORKLOADS_DIR" \
+            "${integration_custom_kernel_args[@]}" \
             --env USER="root" \
             --env CH_LIBC="${libc}" \
             --env WORKLOADS_BASE_URL="$WORKLOADS_BASE_URL" \

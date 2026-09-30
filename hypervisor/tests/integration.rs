@@ -11,6 +11,7 @@
 extern crate test_infra;
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::io::BufRead;
@@ -178,17 +179,24 @@ fn temp_vmcore_file_path(tmp_dir: &TempDir) -> String {
 // Creates the path for direct kernel boot and return the path.
 // For x86_64, this function returns the vmlinux kernel path.
 // For AArch64, this function returns the PE kernel path.
-fn direct_kernel_boot_path() -> PathBuf {
-    let mut workload_path = dirs::home_dir().unwrap();
-    workload_path.push("workloads");
+fn direct_kernel_boot_path_from(custom_kernel: Option<&OsStr>) -> PathBuf {
+    if let Some(custom_kernel) = custom_kernel.filter(|path| !path.is_empty()) {
+        return custom_kernel.into();
+    }
 
-    let mut kernel_path = workload_path;
+    let mut kernel_path = dirs::home_dir().unwrap();
+    kernel_path.push("workloads");
     #[cfg(target_arch = "x86_64")]
     kernel_path.push("vmlinux");
     #[cfg(target_arch = "aarch64")]
     kernel_path.push("Image");
 
     kernel_path
+}
+
+fn direct_kernel_boot_path() -> PathBuf {
+    let custom_kernel = std::env::var_os("CH_CUSTOM_KERNEL");
+    direct_kernel_boot_path_from(custom_kernel.as_deref())
 }
 
 fn edk2_path() -> PathBuf {
@@ -2648,6 +2656,27 @@ mod common_parallel {
     use std::{fs::OpenOptions, io::SeekFrom};
 
     use crate::*;
+
+    #[test]
+    fn test_direct_kernel_boot_path_override() {
+        assert_eq!(
+            direct_kernel_boot_path_from(Some(OsStr::new("/custom/kernel"))),
+            PathBuf::from("/custom/kernel")
+        );
+    }
+
+    #[test]
+    fn test_direct_kernel_boot_path_default() {
+        let mut expected = dirs::home_dir().unwrap();
+        expected.push("workloads");
+        #[cfg(target_arch = "x86_64")]
+        expected.push("vmlinux");
+        #[cfg(target_arch = "aarch64")]
+        expected.push("Image");
+
+        assert_eq!(direct_kernel_boot_path_from(Some(OsStr::new(""))), expected);
+        assert_eq!(direct_kernel_boot_path_from(None), expected);
+    }
 
     #[test]
     #[cfg(target_arch = "x86_64")]
@@ -6254,17 +6283,7 @@ mod common_parallel {
         let mut workload_path = dirs::home_dir().unwrap();
         workload_path.push("workloads");
 
-        #[cfg(target_arch = "x86_64")]
-        let mut kernels = vec![direct_kernel_boot_path()];
-        #[cfg(target_arch = "aarch64")]
-        let kernels = vec![direct_kernel_boot_path()];
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            let mut pvh_kernel_path = workload_path.clone();
-            pvh_kernel_path.push("vmlinux");
-            kernels.push(pvh_kernel_path);
-        }
+        let kernels = [direct_kernel_boot_path()];
 
         let mut initramfs_path = workload_path;
         initramfs_path.push("alpine_initramfs.img");
