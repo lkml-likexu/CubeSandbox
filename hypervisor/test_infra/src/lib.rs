@@ -768,6 +768,14 @@ pub fn exec_host_command_output(command: &str) -> Output {
         .unwrap_or_else(|_| panic!("Expected '{}' to run", command))
 }
 
+pub fn wait_for_child_or_kill(child: &mut Child, timeout: Duration) -> bool {
+    let exited = child.wait_timeout(timeout).unwrap().is_some();
+    if !exited {
+        kill_child(child);
+    }
+    exited
+}
+
 pub fn kill_child(child: &mut Child) {
     let r = unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     if r != 0 {

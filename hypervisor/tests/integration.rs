@@ -4286,13 +4286,13 @@ mod common_parallel {
             guest.ssh_command("sudo shutdown -h now").unwrap();
         });
 
-        let _ = child.wait_timeout(std::time::Duration::from_secs(20));
-        kill_child(&mut child);
+        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(20));
         let output = child.wait_with_output().unwrap();
         handle_child_output(r, &output);
 
         let r = std::panic::catch_unwind(|| {
             // Check that the cloud-hypervisor binary actually terminated
+            assert!(exited, "cloud-hypervisor did not terminate after shutdown");
             assert!(output.status.success());
 
             // Do this check after shutdown of the VM as an easy way to ensure
@@ -4462,12 +4462,12 @@ mod common_parallel {
 
         guest.ssh_command("sudo shutdown -h now").unwrap();
 
-        let _ = child.wait_timeout(std::time::Duration::from_secs(20));
-        kill_child(&mut child);
+        let exited = wait_for_child_or_kill(&mut child, std::time::Duration::from_secs(20));
         let output = child.wait_with_output().unwrap();
 
         let r = std::panic::catch_unwind(|| {
             // Check that the cloud-hypervisor binary actually terminated
+            assert!(exited, "cloud-hypervisor did not terminate after shutdown");
             assert!(output.status.success());
 
             // Do this check after shutdown of the VM as an easy way to ensure
