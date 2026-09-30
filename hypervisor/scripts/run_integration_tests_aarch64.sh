@@ -322,29 +322,29 @@ if [ -n "$test_threads" ]; then
     echo "Running parallel test suites with $test_threads threads"
 fi
 
+RES=0
+record_result() {
+    local suite_result=$1
+    if [ "$RES" -eq 0 ] && [ "$suite_result" -ne 0 ]; then
+        RES=$suite_result
+    fi
+}
+
 if [ "$live_migration_only" != "true" ]; then
     time cargo test $features "common_parallel::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
-    RES=$?
+    record_result $?
 
-    if [ $RES -eq 0 ]; then
-        time cargo test $features "common_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
-        RES=$?
-    fi
+    time cargo test $features "common_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
+    record_result $?
 
-    if [ $RES -eq 0 ]; then
-        time cargo test $features "aarch64_acpi::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
-        RES=$?
-    fi
-
-    [ $RES -eq 0 ] || exit $RES
+    time cargo test $features "aarch64_acpi::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
+    record_result $?
 fi
 
 time cargo test $features "live_migration_parallel::$test_filter" --target "$BUILD_TARGET" -- "${parallel_test_args[@]}" "${test_binary_args[@]}"
-RES=$?
+record_result $?
 
-if [ $RES -eq 0 ]; then
-    time cargo test $features "live_migration_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
-    RES=$?
-fi
+time cargo test $features "live_migration_sequential::$test_filter" --target "$BUILD_TARGET" -- --test-threads=1 "${test_binary_args[@]}"
+record_result $?
 
 exit $RES

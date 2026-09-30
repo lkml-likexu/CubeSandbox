@@ -499,6 +499,30 @@ if "$SCRIPT_DIR/dev_cli.sh" build-container --apt-mirror 'file:///mirror' >"$TMP
 fi
 grep -q 'must be an http(s) URL' "$TMP_DIR/url.out"
 
+integration_tests="$SCRIPT_DIR/../tests/integration.rs"
+common_parallel_module=$(sed -n '/mod common_parallel {/,/mod common_sequential {/p' \
+    "$integration_tests")
+common_sequential_module=$(sed -n '/mod common_sequential {/,/mod live_migration {/p' \
+    "$integration_tests")
+for test_name in test_watchdog test_macvtap test_macvtap_hotplug \
+    test_virtio_block_direct_and_firmware; do
+    test "$(grep -c "fn ${test_name}()" "$integration_tests")" -eq 1
+    if grep -q "fn ${test_name}()" <<< "$common_parallel_module"; then
+        echo "$test_name remains in the parallel module" >&2
+        exit 1
+    fi
+    grep -q "fn ${test_name}()" <<< "$common_sequential_module"
+done
+live_migration_sequential_module=$(sed -n '/mod live_migration_sequential {/,$p' \
+    "$integration_tests")
+test "$(grep -c 'fn test_live_.*watchdog' <<< "$live_migration_sequential_module")" -eq 4
+runner="$SCRIPT_DIR/run_integration_tests_aarch64.sh"
+for suite in common_parallel common_sequential aarch64_acpi \
+    live_migration_parallel live_migration_sequential; do
+    grep -A1 "cargo test.*\"${suite}::\$test_filter\"" "$runner" | \
+        grep -q 'record_result \$?'
+done
+
 grep -q 'rustup target add \$ARCH-unknown-linux-musl' "$SCRIPT_DIR/../resources/Dockerfile"
 if grep -q 'rustup toolchain add.*unknown-linux-musl' "$SCRIPT_DIR/../resources/Dockerfile"; then
     echo "Dockerfile installs a musl target as a host toolchain" >&2
