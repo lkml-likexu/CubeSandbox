@@ -3403,6 +3403,7 @@ mod common_parallel {
                 .as_str(),
             ])
             .default_net()
+            .args(["--serial", "tty", "--console", "off"])
             .capture_output()
             .spawn()
             .unwrap();
