@@ -132,7 +132,9 @@ pub const PCI_HIGH_BASE: GuestAddress = GuestAddress(0x2_0000_0000);
 // * bigger than 32
 // * less than 1023 and
 // * a multiple of 32.
-// We are setting up our interrupt controller to support a maximum of 256 interrupts.
+// Keep the historical vGIC size because the flat distributor-register snapshot
+// format does not record nr_irqs. Changing this value would shift register-bank
+// boundaries and make existing snapshots restore corrupt interrupt state.
 /// First usable interrupt on aarch64
 pub const IRQ_BASE: u32 = 32;
 

@@ -104,6 +104,41 @@ pub use {
 #[cfg(target_arch = "x86_64")]
 const KVM_CAP_SGX_ATTRIBUTE: u32 = 196;
 
+#[cfg(target_arch = "aarch64")]
+const ARM64_64K_DENSITY_IPA_BITS: i32 = 40;
+
+#[cfg(target_arch = "aarch64")]
+fn arm64_vm_ipa_bits(host_ipa_limit: i32, host_page_size: i64) -> i32 {
+    // A 40-bit IPA still gives the guest 1 TiB of physical address space. With
+    // a 64 KiB granule it also lets KVM use two stage-2 levels instead of the
+    // three needed by a 48/52-bit IPA. Each omitted table is a 64 KiB host
+    // page, so this matters for high VM density. Other host granules retain the
+    // previous maximum-IPA behavior.
+    if host_page_size == 64 * 1024 {
+        host_ipa_limit.min(ARM64_64K_DENSITY_IPA_BITS)
+    } else {
+        host_ipa_limit
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod arm64_density_tests {
+    use super::arm64_vm_ipa_bits;
+
+    #[test]
+    fn limits_64k_hosts_to_two_stage2_levels() {
+        assert_eq!(arm64_vm_ipa_bits(52, 64 * 1024), 40);
+        assert_eq!(arm64_vm_ipa_bits(48, 64 * 1024), 40);
+        assert_eq!(arm64_vm_ipa_bits(36, 64 * 1024), 36);
+    }
+
+    #[test]
+    fn preserves_host_limit_on_other_page_sizes() {
+        assert_eq!(arm64_vm_ipa_bits(48, 4 * 1024), 48);
+        assert_eq!(arm64_vm_ipa_bits(48, 16 * 1024), 48);
+    }
+}
+
 #[cfg(feature = "tdx")]
 const KVM_EXIT_TDX: u32 = 35;
 #[cfg(feature = "tdx")]
@@ -1072,7 +1107,10 @@ impl hypervisor::Hypervisor for KvmHypervisor {
         // avoid unnecessary VM creation failures.
         #[cfg(target_arch = "aarch64")]
         if self.kvm.check_extension(Cap::ArmVmIPASize) {
-            vm_type = self.kvm.get_host_ipa_limit().try_into().unwrap();
+            let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            vm_type = arm64_vm_ipa_bits(self.kvm.get_host_ipa_limit(), host_page_size)
+                .try_into()
+                .unwrap();
         }
 
         self.create_vm_with_type(vm_type)

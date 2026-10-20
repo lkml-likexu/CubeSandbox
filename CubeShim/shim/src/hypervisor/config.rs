@@ -35,6 +35,26 @@ pub const VIRTIO_FS_TAG: &str = "cubeShared";
 pub const VIRTIO_FS_ID: &str = "cube-fs";
 const KI_B: u64 = 1 << 10;
 const MI_B: u64 = KI_B << 10;
+
+#[cfg(target_arch = "aarch64")]
+fn thp_for_host_page_size(host_page_size: i64) -> bool {
+    host_page_size != (64 * KI_B) as i64
+}
+
+fn default_thp() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // A PMD-sized THP is 512 MiB with a 64 KiB base page. One sparse
+        // access to MADV_HUGEPAGE guest RAM can therefore consume hundreds of
+        // MiB and destroy single-host sandbox density.
+        let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        return thp_for_host_page_size(host_page_size);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    true
+}
+
 #[derive(Clone)]
 pub struct HypConfig {
     pub debug: bool,
@@ -60,6 +80,7 @@ pub struct VmConfig {
     pub vcpus: u32,
     pub memory_size: u64,
     pub dirty_log: bool,
+    pub thp: bool,
     pub cmdlines: Vec<String>,
     pub kernel: String,
     pub disks: Option<Vec<DiskConfig>>,
@@ -130,6 +151,7 @@ impl VmConfig {
             vcpus: 0,
             memory_size: 0,
             dirty_log: false,
+            thp: default_thp(),
             cmdlines: params,
             kernel: String::default(),
             disks: Some(Vec::new()),
@@ -170,6 +192,7 @@ impl VmConfig {
 
         vc.memory.size = self.memory_size * MI_B;
         vc.memory.dirty_log = self.dirty_log;
+        vc.memory.thp = self.thp;
         vc.balloon = Some(BalloonConfig {
             size: 0,
             deflate_on_oom: false,
@@ -545,6 +568,23 @@ mod tests {
         assert_eq!(pmems[0].id.as_deref(), Some(HYP_OS_IMAGE_ID));
         assert_eq!(pmems[1].file, PathBuf::from("/agent.ext4"));
         assert_eq!(pmems[1].id.as_deref(), Some(HYP_AGENT_ID));
+    }
+
+    #[test]
+    fn propagates_thp_policy_to_the_vmm() {
+        let mut config = VmConfig::default();
+        config.thp = false;
+        assert!(!config.to_vm_config().memory.thp);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn disables_thp_for_64k_hosts() {
+        use crate::hypervisor::config::thp_for_host_page_size;
+
+        assert!(thp_for_host_page_size(4 * 1024));
+        assert!(thp_for_host_page_size(16 * 1024));
+        assert!(!thp_for_host_page_size(64 * 1024));
     }
 
     #[test]

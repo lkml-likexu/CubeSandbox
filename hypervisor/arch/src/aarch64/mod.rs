@@ -200,14 +200,22 @@ pub fn get_host_cpu_phys_bits() -> u8 {
     // A dummy hypervisor created only for querying the host IPA size and will
     // be freed after the query.
     let hv = hypervisor::new().unwrap();
-    let host_cpu_phys_bits = hv.get_host_ipa_limit().try_into().unwrap();
+    let mut host_cpu_phys_bits = hv.get_host_ipa_limit().try_into().unwrap();
     if host_cpu_phys_bits == 0 {
         // Host kernel does not support `get_host_ipa_limit`,
         // we return the default value 40 here.
-        40
-    } else {
-        host_cpu_phys_bits
+        host_cpu_phys_bits = 40;
     }
+
+    // Keep the VMM's MMIO/RAM address allocator inside the 40-bit IPA passed
+    // to KVM on 64 KiB hosts. A 40-bit IPA provides 1 TiB of GPA while
+    // reducing the stage-2 walk from three levels to two.
+    let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if host_page_size == 64 * 1024 {
+        host_cpu_phys_bits = host_cpu_phys_bits.min(40);
+    }
+
+    host_cpu_phys_bits
 }
 
 #[cfg(test)]

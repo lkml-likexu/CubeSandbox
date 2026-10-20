@@ -1547,16 +1547,26 @@ impl MemoryManager {
         )
         .map_err(Error::GuestMemory)?;
 
-        if region.file_offset().is_none() && thp {
+        if region.file_offset().is_none() {
             info!(
-                "Anonymous mapping at 0x{:x} (size = 0x{:x})",
+                "Anonymous mapping at 0x{:x} (size = 0x{:x}, thp = {})",
                 region.as_ptr() as u64,
-                size
+                size,
+                thp
             );
-            let ret = unsafe { libc::madvise(region.as_ptr() as _, size, libc::MADV_HUGEPAGE) };
+            // MADV_NOHUGEPAGE is required for the density policy: merely
+            // omitting MADV_HUGEPAGE still permits a host configured with
+            // transparent_hugepage=always to back a sparse 64 KiB-granule
+            // guest mapping with a 512 MiB PMD-sized THP.
+            let advice = if thp {
+                libc::MADV_HUGEPAGE
+            } else {
+                libc::MADV_NOHUGEPAGE
+            };
+            let ret = unsafe { libc::madvise(region.as_ptr() as _, size, advice) };
             if ret != 0 {
                 let e = io::Error::last_os_error();
-                warn!("Failed to mark pages as THP eligible: {}", e);
+                warn!("Failed to apply THP policy to guest RAM: {}", e);
             }
         }
 

@@ -544,6 +544,30 @@ pub fn physical_bits(max_phys_bits: u8, hypervisor_type: HypervisorType) -> u8 {
     cmp::min(host_phys_bits, guest_phys_bits)
 }
 
+#[cfg(target_arch = "aarch64")]
+fn restore_physical_bits(
+    max_phys_bits: u8,
+    hypervisor_type: HypervisorType,
+    hypervisor: &dyn hypervisor::Hypervisor,
+) -> u8 {
+    // Existing snapshots can contain 64-bit PCI BARs allocated near the top of
+    // the host IPA range. Keep the legacy host limit for restore; cold-created
+    // VMs use physical_bits(), which applies the 40-bit 64K density policy.
+    let host_ipa_limit = hypervisor.get_host_ipa_limit();
+    let host_phys_bits = if host_ipa_limit > 0 {
+        host_ipa_limit.try_into().unwrap()
+    } else {
+        40
+    };
+    let guest_phys_bits = if matches!(hypervisor_type, HypervisorType::KvmPvm) {
+        cmp::min(max_phys_bits, 43)
+    } else {
+        max_phys_bits
+    };
+
+    cmp::min(host_phys_bits, guest_phys_bits)
+}
+
 pub struct Vm {
     #[cfg(feature = "tdx")]
     kernel: Option<File>,
@@ -903,6 +927,21 @@ impl Vm {
     ) -> Result<Self> {
         let timestamp = Instant::now();
 
+        #[cfg(target_arch = "aarch64")]
+        let phys_bits = restore_physical_bits(
+            vm_config.lock().unwrap().cpus.max_phys_bits,
+            hypervisor.hypervisor_type(),
+            hypervisor.as_ref(),
+        );
+
+        #[cfg(target_arch = "aarch64")]
+        let vm = {
+            hypervisor.check_required_extensions().unwrap();
+            hypervisor
+                .create_vm_with_type(u64::from(phys_bits))
+                .unwrap()
+        };
+        #[cfg(not(target_arch = "aarch64"))]
         let vm = Self::create_hypervisor_vm(
             &hypervisor,
             #[cfg(feature = "tdx")]
@@ -912,6 +951,7 @@ impl Vm {
         let memory_manager = if let Some(memory_manager_snapshot) =
             snapshot.snapshots.get(MEMORY_MANAGER_SNAPSHOT_ID)
         {
+            #[cfg(not(target_arch = "aarch64"))]
             let phys_bits = physical_bits(
                 vm_config.lock().unwrap().cpus.max_phys_bits,
                 hypervisor.hypervisor_type(),
