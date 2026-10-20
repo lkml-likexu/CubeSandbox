@@ -7,9 +7,9 @@
 # discovers.
 #
 # Where you run it matters for one section:
-#   - Section 3.3 measures memory with free(1) on the local machine, so it only
-#     runs on a single-node deployment whose Cubelet is this machine. It is
-#     skipped, with a note in the report, everywhere else.
+#   - Section 3.3 measures local /proc, process PSS and cgroup-v2 memory, so it
+#     only runs on a single-node deployment whose Cubelet is this machine. It
+#     is skipped, with a note in the report, everywhere else.
 #
 # WARNING:
 #   The run subcommand destroys ALL existing sandboxes before every measurement,
@@ -125,6 +125,8 @@
 #   CUBE_BENCH_MVM_MAX    hard cap on total sandboxes the memory-density sweep (3.3) will create,
 #                         default 2000; stops the sweep before the host OOMs even if creation only
 #                         trickles instead of cleanly stalling
+#   CUBE_BENCH_MEMORY_EXES colon-separated executable basenames attributed to sandboxes in 3.3;
+#                         default containerd-shim-cube-rs:cube-hypervisor:cloud-hypervisor
 #
 # Example:
 #   # full report on a single-host deployment, from the repository root
@@ -416,6 +418,8 @@ CUBELET_CONF="${CUBELET_CONF:-/usr/local/services/cubetoolbox/Cubelet/dynamiccon
 # 4.x bench scripts are located relative to it instead of being configured
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
 EXAMPLES_DIR="${REPO_ROOT}/examples/snapshot-rollback-clone"
+# shellcheck source=tests/perf/memory_breakdown.sh
+source "${REPO_ROOT}/tests/perf/memory_breakdown.sh"
 
 # Recommended host.quota for a benchmark host; see the PREREQUISITE block above
 QUOTA_MIN_MCPU=1000000
@@ -596,7 +600,8 @@ cmd_run() {
 	# Resolve the report path up front (the script cd's around later) so it can be
 	# announced before the run starts. The default name carries a timestamp so
 	# repeated runs do not clobber each other's reports.
-	local default_md="/tmp/cubebench_$(date '+%Y%m%d_%H%M%S').md"
+	local default_md
+	default_md="/tmp/cubebench_$(date '+%Y%m%d_%H%M%S').md"
 	OUTPUT_MD="$(abs_path "${OUTPUT_MD:-$default_md}" "$orig_pwd")"
 	color_echo "report: $OUTPUT_MD"
 
@@ -1610,7 +1615,7 @@ parse_cpu_config() {
 }
 
 print_test_env() {
-	local os kernel arch cpu_model cpu_cfg numa mem disk
+	local os kernel arch cpu_model cpu_cfg numa mem disk page_size thp_mode
 	local nodes local_cubelet=0
 	local -a quota=()
 	if [ -r "$CUBELET_CONF" ]; then
@@ -1630,6 +1635,7 @@ print_test_env() {
 	nodes="$(get_node_count)"
 	[ -n "$nodes" ] || nodes="unknown"
 
+	# shellcheck disable=SC1091
 	os="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
 	[ -n "$os" ] || os="unknown"
 	kernel="$(uname -sr)"
@@ -1652,6 +1658,15 @@ print_test_env() {
 	[ -z "$mem" ] && mem="$(awk '/MemTotal/{printf "%.1f GiB", $2/1024/1024; exit}' /proc/meminfo 2>/dev/null)"
 	[ -n "$mem" ] || mem="unknown"
 
+	page_size="$(getconf PAGE_SIZE 2>/dev/null)"
+	if [[ "$page_size" =~ ^[0-9]+$ ]]; then
+		page_size="$((page_size / 1024)) KiB"
+	else
+		page_size="unknown"
+	fi
+	thp_mode="$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
+	[ -n "$thp_mode" ] || thp_mode="unknown"
+
 	disk="$(lsblk -d -n -o NAME,SIZE,TYPE,MODEL 2>/dev/null | awk '$3=="disk"{printf "%s(%s) ", $1, $2}')"
 	[ -z "$disk" ] && disk="$(df -h . 2>/dev/null | awk 'NR==2{print $1" "$2}')"
 	[ -n "$disk" ] || disk="unknown"
@@ -1668,6 +1683,8 @@ print_test_env() {
 		echo "| CPU Config | ${cpu_cfg} |"
 		echo "| NUMA Nodes | ${numa} |"
 		echo "| Total Memory | ${mem} |"
+		echo "| Host Page Size | ${page_size} |"
+		echo "| Host THP Mode | ${thp_mode} |"
 		echo "| Data Disk | ${disk} |"
 		echo "| Cubelet Nodes | ${nodes} |"
 		if [ "$local_cubelet" = "1" ]; then
@@ -1685,10 +1702,10 @@ print_test_env() {
 }
 
 get_used_mem() {
-	# free's "used" column (total - free - buff/cache on procps-ng, the standard
-	# free on the distros this script targets) already excludes the page cache,
-	# so it reports anonymous/VM memory directly. That is exactly the per-VM
-	# overhead this section wants; no drop_caches dance is needed.
+	# Keep the historical MemTotal-MemAvailable headline for comparability.
+	# MemAvailable is a reclaim estimate, not a direct VM charge: its delta also
+	# contains slab, page-table, page-cache and reclaim-policy movement. Section
+	# 3.3 therefore records a second, attributed snapshot alongside this value.
 	#
 	# "used" is $3 on procps-ng; other free implementations (busybox, older
 	# Debian) lay the columns out differently, so fall back to /proc/meminfo the
@@ -1717,6 +1734,33 @@ get_used_mem() {
 			else        printf "%d\n", (t - f - b - c - s) / 1024
 		}
 	' /proc/meminfo 2>/dev/null
+}
+
+density_snapshot_value() {
+	local snapshot="$1" wanted="$2" field
+	local IFS=$'\t'
+
+	for field in $snapshot; do
+		case "$field" in
+		"${wanted}="*)
+			printf '%s\n' "${field#*=}"
+			return 0
+			;;
+		esac
+	done
+	printf '0\n'
+}
+
+density_delta_per_vm() {
+	local current="$1" baseline="$2" count="$3" divisor="${4:-1024}"
+
+	if [ "$count" -le 0 ] || [ "$current" -lt "$baseline" ]; then
+		printf '—\n'
+		return
+	fi
+	awk -v current="$current" -v baseline="$baseline" -v count="$count" \
+		-v divisor="$divisor" \
+		'BEGIN { printf "%.2f", (current - baseline) / count / divisor }'
 }
 
 get_sandbox_count() {
@@ -1778,7 +1822,7 @@ run_mvm_bench() {
 	# clean zero-growth of a hard quota and stops the sweep instead of grinding on.
 	local min_growth=$((BATCH / 10))
 	[ "$min_growth" -lt 1 ] && min_growth=1
-	local mem_baseline
+	local mem_baseline detail_baseline detail_now
 	local iter=0
 	local actual mem_now gained
 	local prev_actual=0   # live count after the previous batch, to measure growth
@@ -1786,7 +1830,7 @@ run_mvm_bench() {
 	local stall_limit=2   # declare the density limit only after this many stalls
 	local created_any=0   # set once any batch has actually produced a sandbox
 	local incomplete_note="" # non-empty when the loop stopped before the real limit
-	local -a EXPECTED_ARR MEM_ARR
+	local -a EXPECTED_ARR MEM_ARR MEM_DETAIL_ARR
 
 	# ---- baseline ----
 	mem_baseline=$(get_used_mem)
@@ -1797,6 +1841,8 @@ run_mvm_bench() {
 	fi
 	EXPECTED_ARR+=("0 (baseline)")
 	MEM_ARR+=("${mem_baseline}")
+	detail_baseline="$(cube_memory_snapshot)"
+	MEM_DETAIL_ARR+=("${detail_baseline}")
 	color_echo "[baseline] expected=0  used_mem=${mem_baseline} MiB"
 
 	while [ "$iter" -lt "$max_batches" ]; do
@@ -1848,6 +1894,8 @@ run_mvm_bench() {
 			EXPECTED_ARR+=("${actual}")
 		fi
 		MEM_ARR+=("${mem_now}")
+		detail_now="$(cube_memory_snapshot)"
+		MEM_DETAIL_ARR+=("${detail_now}")
 
 		# A density reading is only meaningful once the host has actually created
 		# at least one sandbox. If the very first batches fail for a non-capacity
@@ -1921,7 +1969,7 @@ run_mvm_bench() {
 				continue
 			fi
 
-			cnt_num=$(echo "${cnt}" | grep -oE '[0-9]+' | head -n1)
+			cnt_num="${cnt%% *}"
 			diff=$((mem - mem_baseline))
 			# A reading below the baseline (host reclaimed memory between reads, or
 			# the baseline was captured with template-build remnants still counted)
@@ -1944,6 +1992,137 @@ run_mvm_bench() {
 			echo "> ${incomplete_note}."
 			echo ""
 		fi
+
+		echo "### 3.3.1 Per-sandbox attributed memory"
+		echo ""
+		echo "All memory columns below are deltas from the zero-sandbox baseline, divided by the live sandbox count. PSS avoids double-counting shared file pages; cgroup v2 includes charged kernel/KVM memory that process RSS cannot see."
+		echo ""
+		echo "| Live | Shim/VMM PSS | cgroup total | cgroup anon | cgroup kernel | cg kernel stack | cg page tables | cg sec page tables | cg unreclaimable slab | Threads | Coverage (proc/smaps/cgroup; groups/stat) |"
+		echo "|:--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|"
+
+		local snapshot key current baseline
+		local pss cg_total cg_anon cg_kernel cg_kstack cg_pt cg_secpt cg_slab threads
+		local proc_count smaps_count cgroup_process_count cgroup_count cgroup_stat_count
+		local baseline_proc_count baseline_smaps_count baseline_cgroup_process_count
+		local baseline_cgroup_count baseline_cgroup_stat_count
+		for i in "${!MEM_DETAIL_ARR[@]}"; do
+			[ "$i" -eq 0 ] && continue
+			cnt="${EXPECTED_ARR[$i]}"
+			cnt_num="${cnt%% *}"
+			snapshot="${MEM_DETAIL_ARR[$i]}"
+
+			key=process_pss
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			pss="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_current
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_total="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_anon
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_anon="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_kernel
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_kernel="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_kernel_stack
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_kstack="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_pagetables
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_pt="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_sec_pagetables
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_secpt="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=cgroup_slab_unreclaimable
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			cg_slab="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			key=process_threads
+			current="$(density_snapshot_value "$snapshot" "$key")"
+			baseline="$(density_snapshot_value "$detail_baseline" "$key")"
+			threads="$(density_delta_per_vm "$current" "$baseline" "$cnt_num" 1)"
+			proc_count="$(density_snapshot_value "$snapshot" process_count)"
+			smaps_count="$(density_snapshot_value "$snapshot" process_smaps_count)"
+			cgroup_process_count="$(density_snapshot_value "$snapshot" cgroup_process_count)"
+			cgroup_count="$(density_snapshot_value "$snapshot" cgroup_count)"
+			cgroup_stat_count="$(density_snapshot_value "$snapshot" cgroup_stat_count)"
+			baseline_proc_count="$(density_snapshot_value "$detail_baseline" process_count)"
+			baseline_smaps_count="$(density_snapshot_value "$detail_baseline" process_smaps_count)"
+			baseline_cgroup_process_count="$(density_snapshot_value "$detail_baseline" cgroup_process_count)"
+			baseline_cgroup_count="$(density_snapshot_value "$detail_baseline" cgroup_count)"
+			baseline_cgroup_stat_count="$(density_snapshot_value "$detail_baseline" cgroup_stat_count)"
+
+			# Permission failures must remain visibly unavailable rather than
+			# being rendered as a misleading zero-memory result.
+			if [ "$smaps_count" -ne "$proc_count" ] ||
+				[ "$baseline_smaps_count" -ne "$baseline_proc_count" ]; then
+				pss="—"
+			fi
+			if [ "$cgroup_process_count" -ne "$proc_count" ] ||
+				[ "$baseline_cgroup_process_count" -ne "$baseline_proc_count" ]; then
+				cg_total="—"
+				cg_anon="—"
+				cg_kernel="—"
+				cg_kstack="—"
+				cg_pt="—"
+				cg_secpt="—"
+				cg_slab="—"
+			elif [ "$cgroup_stat_count" -ne "$cgroup_count" ] ||
+				[ "$baseline_cgroup_stat_count" -ne "$baseline_cgroup_count" ]; then
+				cg_anon="—"
+				cg_kernel="—"
+				cg_kstack="—"
+				cg_pt="—"
+				cg_secpt="—"
+				cg_slab="—"
+			fi
+
+			printf "| %s | %s MiB | %s MiB | %s MiB | %s MiB | %s MiB | %s MiB | %s MiB | %s MiB | %s | %s/%s/%s |\n" \
+				"$cnt" "$pss" "$cg_total" "$cg_anon" "$cg_kernel" "$cg_kstack" \
+				"$cg_pt" "$cg_secpt" "$cg_slab" "$threads" \
+				"$proc_count" "$smaps_count" "$cgroup_process_count; $cgroup_count/$cgroup_stat_count"
+		done
+		echo ""
+
+		echo "### 3.3.2 Host kernel-memory deltas"
+		echo ""
+		echo "These are host-wide \`/proc/meminfo\` deltas and therefore act as a fallback/cross-check when the VMM is outside the expected cgroup or KVM accounting is incomplete."
+		echo ""
+		echo "| Live | KernelStack | PageTables | SecPageTables | SUnreclaim | AnonHugePages |"
+		echo "|:--:|--:|--:|--:|--:|--:|"
+		local host_kstack host_pt host_secpt host_slab host_anon_huge
+		for i in "${!MEM_DETAIL_ARR[@]}"; do
+			[ "$i" -eq 0 ] && continue
+			cnt="${EXPECTED_ARR[$i]}"
+			cnt_num="${cnt%% *}"
+			snapshot="${MEM_DETAIL_ARR[$i]}"
+
+			current="$(density_snapshot_value "$snapshot" host_kernel_stack)"
+			baseline="$(density_snapshot_value "$detail_baseline" host_kernel_stack)"
+			host_kstack="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			current="$(density_snapshot_value "$snapshot" host_page_tables)"
+			baseline="$(density_snapshot_value "$detail_baseline" host_page_tables)"
+			host_pt="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			current="$(density_snapshot_value "$snapshot" host_sec_page_tables)"
+			baseline="$(density_snapshot_value "$detail_baseline" host_sec_page_tables)"
+			host_secpt="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			current="$(density_snapshot_value "$snapshot" host_sunreclaim)"
+			baseline="$(density_snapshot_value "$detail_baseline" host_sunreclaim)"
+			host_slab="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+			current="$(density_snapshot_value "$snapshot" host_anon_huge)"
+			baseline="$(density_snapshot_value "$detail_baseline" host_anon_huge)"
+			host_anon_huge="$(density_delta_per_vm "$current" "$baseline" "$cnt_num")"
+
+			printf "| %s | %s MiB | %s MiB | %s MiB | %s MiB | %s MiB |\n" \
+				"$cnt" "$host_kstack" "$host_pt" "$host_secpt" "$host_slab" "$host_anon_huge"
+		done
+		echo ""
 	} | tee -a "$OUTPUT_MD"
 }
 

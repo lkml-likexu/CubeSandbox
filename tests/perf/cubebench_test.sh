@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=cubebench.sh
+# shellcheck disable=SC1091
 source "${CUBEBENCH_SCRIPT:-${SCRIPT_DIR}/cubebench.sh}"
 
 assert_cpu_config() {
@@ -24,6 +25,55 @@ assert_report_line() {
 		return 1
 	fi
 }
+
+snapshot=$'process_pss=2048\tcgroup_kernel=1024\tprocess_threads=8'
+[ "$(density_snapshot_value "$snapshot" process_pss)" = "2048" ]
+[ "$(density_snapshot_value "$snapshot" missing)" = "0" ]
+[ "$(density_delta_per_vm 3072 1024 2)" = "1.00" ]
+[ "$(density_delta_per_vm 10 2 4 1)" = "2.00" ]
+[ "$(density_delta_per_vm 1 2 4)" = "—" ]
+printf 'PASS: density memory arithmetic\n'
+
+fixture="$(mktemp -d)"
+mkdir -p "$fixture/proc/100" "$fixture/proc/101" \
+	"$fixture/cgroup/cube/child"
+ln -s /opt/containerd-shim-cube-rs "$fixture/proc/100/exe"
+ln -s /opt/containerd-shim-cube-rs "$fixture/proc/101/exe"
+printf 'Threads:\t2\n' >"$fixture/proc/100/status"
+printf 'Threads:\t3\n' >"$fixture/proc/101/status"
+cat >"$fixture/proc/100/smaps_rollup" <<'EOF'
+Rss: 128 kB
+Pss: 64 kB
+Private_Clean: 16 kB
+Private_Dirty: 32 kB
+Anonymous: 48 kB
+EOF
+# Deliberately omit PID 101's smaps_rollup to exercise partial-coverage output.
+printf '0::/cube\n' >"$fixture/proc/100/cgroup"
+printf '0::/cube/child\n' >"$fixture/proc/101/cgroup"
+cat >"$fixture/proc/meminfo" <<'EOF'
+MemTotal: 1024 kB
+MemAvailable: 512 kB
+EOF
+printf '4096\n' >"$fixture/cgroup/cube/memory.current"
+printf 'anon 4096\nkernel 1024\n' >"$fixture/cgroup/cube/memory.stat"
+printf '2048\n' >"$fixture/cgroup/cube/child/memory.current"
+printf 'anon 2048\nkernel 512\n' >"$fixture/cgroup/cube/child/memory.stat"
+
+fixture_snapshot="$(
+	CUBE_BENCH_PROC_ROOT="$fixture/proc" \
+		CUBE_BENCH_CGROUP_ROOT="$fixture/cgroup" \
+		cube_memory_snapshot
+)"
+[ "$(density_snapshot_value "$fixture_snapshot" process_count)" = "2" ]
+[ "$(density_snapshot_value "$fixture_snapshot" process_smaps_count)" = "1" ]
+[ "$(density_snapshot_value "$fixture_snapshot" cgroup_process_count)" = "2" ]
+[ "$(density_snapshot_value "$fixture_snapshot" cgroup_count)" = "1" ]
+[ "$(density_snapshot_value "$fixture_snapshot" cgroup_stat_count)" = "1" ]
+[ "$(density_snapshot_value "$fixture_snapshot" cgroup_current)" = "4" ]
+[ "$(density_snapshot_value "$fixture_snapshot" cgroup_anon)" = "4" ]
+rm -rf "$fixture"
+printf 'PASS: density cgroup dedup and coverage\n'
 
 assert_cpu_config "complete topology" \
 	"192 logical CPUs (2 sockets, 48 cores/socket, 2 threads/core)" \

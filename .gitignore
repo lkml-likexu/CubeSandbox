@@ -85,6 +85,7 @@ __pycache__
 /tests/perf/*
 !/tests/perf/cubebench.sh
 !/tests/perf/cubebench_test.sh
+!/tests/perf/memory_breakdown.sh
 
 web/tsconfig.tsbuildinfo
 
