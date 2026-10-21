@@ -26,6 +26,7 @@ use super::{Result, VsockError};
 use crate::get_host_address_range;
 use crate::vsock::defs::uapi;
 use virtio_queue::DescriptorChain;
+use vm_memory::bitmap::Bitmap;
 use vm_memory::{Address, GuestMemory};
 use vm_virtio::{AccessPlatform, Translatable};
 // The vsock packet header is defined by the C struct:
@@ -297,10 +298,31 @@ impl VsockPacket {
             return Err(VsockError::HdrDescTooSmall(head.len()));
         }
 
+        // Header setters write through a raw pointer below, so record the
+        // complete writable range before exposing it. This is conservative
+        // for malformed packets and keeps dirty-log snapshots complete.
+        desc_chain
+            .memory()
+            .get_slice(
+                head.addr()
+                    .translate_gva(access_platform, VSOCK_PKT_HDR_SIZE),
+                VSOCK_PKT_HDR_SIZE,
+            )
+            .map_err(|_| VsockError::GuestMemory)?
+            .bitmap()
+            .mark_dirty(0, VSOCK_PKT_HDR_SIZE);
+
         // Prior to Linux v6.3 there are two descriptors
         if head.has_next() {
             let buf_desc = desc_chain.next().ok_or(VsockError::BufDescMissing)?;
             let buf_size = buf_desc.len() as usize;
+            let buf_addr = buf_desc.addr().translate_gva(access_platform, buf_size);
+            desc_chain
+                .memory()
+                .get_slice(buf_addr, buf_size)
+                .map_err(|_| VsockError::GuestMemory)?
+                .bitmap()
+                .mark_dirty(0, buf_size);
 
             Ok(Self {
                 hdr: get_host_address_range(
@@ -311,17 +333,24 @@ impl VsockPacket {
                 )
                 .ok_or(VsockError::GuestMemory)?,
                 buf: Some(
-                    get_host_address_range(
-                        desc_chain.memory(),
-                        buf_desc.addr().translate_gva(access_platform, buf_size),
-                        buf_size,
-                    )
-                    .ok_or(VsockError::GuestMemory)?,
+                    get_host_address_range(desc_chain.memory(), buf_addr, buf_size)
+                        .ok_or(VsockError::GuestMemory)?,
                 ),
                 buf_size,
             })
         } else {
             let buf_size: usize = head.len() as usize - VSOCK_PKT_HDR_SIZE;
+            let buf_addr = head
+                .addr()
+                .checked_add(VSOCK_PKT_HDR_SIZE as u64)
+                .unwrap()
+                .translate_gva(access_platform, buf_size);
+            desc_chain
+                .memory()
+                .get_slice(buf_addr, buf_size)
+                .map_err(|_| VsockError::GuestMemory)?
+                .bitmap()
+                .mark_dirty(0, buf_size);
             Ok(Self {
                 hdr: get_host_address_range(
                     desc_chain.memory(),
@@ -331,15 +360,8 @@ impl VsockPacket {
                 )
                 .ok_or(VsockError::GuestMemory)?,
                 buf: Some(
-                    get_host_address_range(
-                        desc_chain.memory(),
-                        head.addr()
-                            .checked_add(VSOCK_PKT_HDR_SIZE as u64)
-                            .unwrap()
-                            .translate_gva(access_platform, buf_size),
-                        buf_size,
-                    )
-                    .ok_or(VsockError::GuestMemory)?,
+                    get_host_address_range(desc_chain.memory(), buf_addr, buf_size)
+                        .ok_or(VsockError::GuestMemory)?,
                 ),
                 buf_size,
             })
@@ -500,7 +522,8 @@ mod tests {
     use crate::GuestMemoryMmap;
     use virtio_bindings::bindings::virtio_ring::VRING_DESC_F_WRITE;
     use virtio_queue::QueueOwnedT;
-    use vm_memory::GuestAddress;
+    use vm_memory::bitmap::Bitmap;
+    use vm_memory::{GuestAddress, GuestMemory};
     use vm_virtio::queue::testing::VirtqDesc as GuestQDesc;
 
     macro_rules! create_context {
@@ -651,6 +674,9 @@ mod tests {
                 pkt.buf().unwrap().len(),
                 handler_ctx.guest_rxvq.dtable[1].len.get() as usize
             );
+            let region = test_ctx.mem.find_region(GuestAddress(0)).unwrap();
+            assert!(region.bitmap().dirty_at(0x0040_0000));
+            assert!(region.bitmap().dirty_at(0x0041_0000));
         }
 
         // Test case: read-only RX packet header.

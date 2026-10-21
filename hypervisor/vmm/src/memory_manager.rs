@@ -71,6 +71,17 @@ struct MemorySnapshotFile {
     external: bool,
 }
 
+fn use_dirty_log_for_snapshot(
+    dirty_log: bool,
+    snapshot_type: SnapshotType,
+    external_target: bool,
+) -> bool {
+    // Dirty-log output is an in-place overlay, never a standalone image. A
+    // directory-backed target is created empty, so selecting this path there
+    // would publish sparse zeroes for every clean page.
+    dirty_log && snapshot_type != SnapshotType::Full && external_target
+}
+
 impl MemorySnapshotFile {
     fn from_snapshot_url(
         snapshot_url: &str,
@@ -172,6 +183,36 @@ mod memory_snapshot_file_tests {
 
         assert_eq!(fs::metadata(&file_path).unwrap().len(), original_len);
         fs::remove_file(file_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod snapshot_write_mode_tests {
+    use super::{use_dirty_log_for_snapshot, SnapshotType};
+
+    #[test]
+    fn full_snapshot_ignores_dirty_log_optimization() {
+        assert!(!use_dirty_log_for_snapshot(true, SnapshotType::Full, true));
+        assert!(use_dirty_log_for_snapshot(
+            true,
+            SnapshotType::Incremental,
+            true
+        ));
+        assert!(use_dirty_log_for_snapshot(
+            true,
+            SnapshotType::SoftDirty,
+            true
+        ));
+        assert!(!use_dirty_log_for_snapshot(
+            true,
+            SnapshotType::Incremental,
+            false
+        ));
+        assert!(!use_dirty_log_for_snapshot(
+            false,
+            SnapshotType::Incremental,
+            true
+        ));
     }
 }
 
@@ -3038,16 +3079,13 @@ impl Transportable for MemoryManager {
             config.memory_vol_url.as_deref(),
         )?;
 
-        if self.dirty_log {
-            let guest_memory = self.guest_memory.memory();
+        if use_dirty_log_for_snapshot(
+            self.dirty_log,
+            config.snapshot_type,
+            memory_file_target.is_external(),
+        ) {
             let memory_file = memory_file_target.open_for_fresh_write()?;
             info!("Saving dirty guest memory to snapshot image file.");
-            let total_size = guest_memory.iter().map(|region| region.len()).sum::<u64>();
-            if !memory_file_target.is_external() {
-                memory_file
-                    .set_len(total_size)
-                    .map_err(|e| MigratableError::MigrateSend(e.into()))?;
-            }
 
             let mut offset = 0_u64;
             for range in self.snapshot_memory_ranges.regions() {

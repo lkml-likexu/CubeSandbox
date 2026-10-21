@@ -360,7 +360,7 @@ mod tests {
                 (VRING_DESC_F_WRITE | VRING_DESC_F_NEXT).try_into().unwrap(),
                 1,
             );
-            guest_rxvq.dtable[1].set(0x0040_1000, 4096, VRING_DESC_F_WRITE.try_into().unwrap(), 0);
+            guest_rxvq.dtable[1].set(0x0041_0000, 4096, VRING_DESC_F_WRITE.try_into().unwrap(), 0);
             guest_rxvq.avail.ring[0].set(0);
             guest_rxvq.avail.idx.set(1);
 
