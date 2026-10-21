@@ -71,15 +71,29 @@ struct MemorySnapshotFile {
     external: bool,
 }
 
+fn soft_dirty_write_mode(armed: bool) -> SnapshotType {
+    if armed {
+        SnapshotType::SoftDirty
+    } else {
+        SnapshotType::Full
+    }
+}
+
 fn use_dirty_log_for_snapshot(
     dirty_log: bool,
     snapshot_type: SnapshotType,
     external_target: bool,
+    soft_dirty_armed: bool,
 ) -> bool {
     // Dirty-log output is an in-place overlay, never a standalone image. A
     // directory-backed target is created empty, so selecting this path there
-    // would publish sparse zeroes for every clean page.
-    dirty_log && snapshot_type != SnapshotType::Full && external_target
+    // would publish sparse zeroes for every clean page. An unarmed SoftDirty
+    // request must also reach send_soft_dirty_memory() and write a complete
+    // image because its cloned destination can have a different baseline.
+    dirty_log
+        && snapshot_type != SnapshotType::Full
+        && (snapshot_type != SnapshotType::SoftDirty || soft_dirty_armed)
+        && external_target
 }
 
 impl MemorySnapshotFile {
@@ -188,30 +202,51 @@ mod memory_snapshot_file_tests {
 
 #[cfg(test)]
 mod snapshot_write_mode_tests {
-    use super::{use_dirty_log_for_snapshot, SnapshotType};
+    use super::{soft_dirty_write_mode, use_dirty_log_for_snapshot, SnapshotType};
 
     #[test]
-    fn full_snapshot_ignores_dirty_log_optimization() {
-        assert!(!use_dirty_log_for_snapshot(true, SnapshotType::Full, true));
-        assert!(use_dirty_log_for_snapshot(
+    fn unarmed_soft_dirty_uses_complete_memory_image() {
+        assert_eq!(soft_dirty_write_mode(false), SnapshotType::Full);
+        assert_eq!(soft_dirty_write_mode(true), SnapshotType::SoftDirty);
+    }
+
+    #[test]
+    fn dirty_log_overlay_requires_a_compatible_base() {
+        assert!(!use_dirty_log_for_snapshot(
             true,
-            SnapshotType::Incremental,
+            SnapshotType::Full,
+            true,
             true
         ));
         assert!(use_dirty_log_for_snapshot(
             true,
+            SnapshotType::Incremental,
+            true,
+            false
+        ));
+        assert!(!use_dirty_log_for_snapshot(
+            true,
             SnapshotType::SoftDirty,
+            true,
+            false
+        ));
+        assert!(use_dirty_log_for_snapshot(
+            true,
+            SnapshotType::SoftDirty,
+            true,
             true
         ));
         assert!(!use_dirty_log_for_snapshot(
             true,
             SnapshotType::Incremental,
+            false,
             false
         ));
         assert!(!use_dirty_log_for_snapshot(
             false,
             SnapshotType::Incremental,
-            true
+            true,
+            false
         ));
     }
 }
@@ -2520,9 +2555,9 @@ impl MemoryManager {
     /// very first call to this method:
     ///   1. Tries `probe_soft_dirty_support()` (which itself performs the
     ///      initial `clear_soft_dirty()` and arms tracking on success).
-    ///   2. Writes a snapshot using the pagemap_anon set (every CoW page),
-    ///      because there is no prior soft-dirty window to take an
-    ///      intersection against.
+    ///   2. Writes a complete memory image, because the destination may be a
+    ///      clone of the previous runtime snapshot while pagemap_anon is
+    ///      relative to the image used at the last restore.
     ///   3. Sets `soft_dirty_armed = true` only on probe success.
     ///
     /// Subsequent calls (with `soft_dirty_armed == true`) take the
@@ -2530,11 +2565,10 @@ impl MemoryManager {
     /// and re-arm via `clear_soft_dirty()` for the next cycle.
     ///
     /// Degradation: if `probe_soft_dirty_support()` returns false (kernel
-    /// without `CONFIG_MEM_SOFT_DIRTY=y`), or any `clear_soft_dirty()`
-    /// call fails at runtime, this method silently falls back to the
-    /// pagemap_anon path and leaves `soft_dirty_armed` at false so the
-    /// next cycle retries. The fallback is logged but not surfaced as
-    /// an error to the caller.
+    /// without `CONFIG_MEM_SOFT_DIRTY=y`), or any `clear_soft_dirty()` call
+    /// fails at runtime, `soft_dirty_armed` remains false and the next cycle
+    /// writes another complete image. This costs more I/O but avoids applying
+    /// a last-restore-relative pagemap delta to a previous-snapshot clone.
     fn send_soft_dirty_memory(
         &self,
         destination_url: &str,
@@ -2546,18 +2580,26 @@ impl MemoryManager {
 
         // First-time path (or any time we are not currently armed): we
         // cannot trust the soft-dirty bitmap because there is no prior
-        // `clear_soft_dirty()` to anchor the window, so write the full
-        // anon-page set. Then try to arm tracking for the next cycle.
-        if !self.soft_dirty_armed.load(Ordering::Acquire) {
+        // `clear_soft_dirty()` to anchor the window. PagemapAnon is relative
+        // to the last restore image, while this destination can be cloned from
+        // a newer runtime snapshot, so an overlay can retain stale bytes for a
+        // page that reverted to its restore backing. Write every range instead.
+        if soft_dirty_write_mode(self.soft_dirty_armed.load(Ordering::Acquire))
+            == SnapshotType::Full
+        {
             info!(
-                "Soft-dirty: tracker not yet armed, writing full anon-page snapshot \
+                "Soft-dirty: tracker not yet armed, writing complete memory image \
                  and attempting to arm soft-dirty for the next cycle"
             );
 
-            // Write a full anon-page (pagemap_anon) snapshot. This already
-            // matches what `send_pagemap_anon_memory` does and it produces
-            // a self-contained snapshot file.
-            self.send_pagemap_anon_memory(destination_url, memory_vol_url)?;
+            let memory_file_target =
+                MemorySnapshotFile::from_snapshot_url(destination_url, memory_vol_url.as_deref())?;
+            let memory_file = memory_file_target.open_for_fresh_write()?;
+            let mut file_offset = 0u64;
+            for range in self.snapshot_memory_ranges.regions() {
+                self.save_range_to_file(&memory_file, range, file_offset)?;
+                file_offset += range.length;
+            }
 
             // Probe + arm. `probe_soft_dirty_support()` writes "4" to
             // /proc/self/clear_refs, which both detects kernel support
@@ -2570,7 +2612,7 @@ impl MemoryManager {
             } else {
                 debug!(
                     "Soft-dirty: kernel does not support CONFIG_MEM_SOFT_DIRTY, \
-                     subsequent snapshots will keep using the anon-page path"
+                     subsequent snapshots will keep writing complete memory images"
                 );
             }
 
@@ -2645,8 +2687,8 @@ impl MemoryManager {
         if let Err(e) = clear_soft_dirty() {
             warn!(
                 "Soft-dirty: clear_soft_dirty() failed after writing delta ({}), \
-                 disarming; the next snapshot will fall back to the full \
-                 anon-page path and try to re-arm",
+                 disarming; the next snapshot will write a complete memory image \
+                 and try to re-arm",
                 e
             );
             self.soft_dirty_armed.store(false, Ordering::Release);
@@ -3083,6 +3125,7 @@ impl Transportable for MemoryManager {
             self.dirty_log,
             config.snapshot_type,
             memory_file_target.is_external(),
+            self.soft_dirty_armed.load(Ordering::Acquire),
         ) {
             let memory_file = memory_file_target.open_for_fresh_write()?;
             info!("Saving dirty guest memory to snapshot image file.");
