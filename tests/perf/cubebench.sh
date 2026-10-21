@@ -1071,7 +1071,9 @@ env_reset() {
 	# silently recording numbers measured against contaminated state.
 	if [ "${USE_CUBECLI:-0}" = "1" ]; then
 		color_echo "cubecli unsafe rm --all"
-		cubecli unsafe rm --all >/dev/null 2>&1
+		if ! cubecli unsafe rm --all >/dev/null 2>&1; then
+			color_echo "WARN: cubecli reported that one or more local sandboxes failed to delete; waiting for the authoritative cluster count" >&2
+		fi
 	elif ! destroy_all_sandboxes; then
 		SECTION_FAIL_REASON="could not list sandboxes to reset the cluster (cubemaster error)"
 		return 1

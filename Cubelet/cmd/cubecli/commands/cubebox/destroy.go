@@ -5,14 +5,18 @@
 package cubebox
 
 import (
+	gocontext "context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/urfave/cli/v2"
 
 	"github.com/tencentcloud/CubeSandbox/Cubelet/cmd/cubecli/commands"
+	"github.com/tencentcloud/CubeSandbox/Cubelet/pkg/ret"
 	"github.com/tencentcloud/CubeSandbox/pkgs/proto/services/cubebox/v1"
 )
 
@@ -55,17 +59,7 @@ var Destroy = &cli.Command{
 		if len(args) > 0 {
 			ids = args
 		} else if context.Bool("all") {
-			ctx, cancel := commands.AppContext(context)
-			defer cancel()
-
-			req := &cubebox.ListCubeSandboxRequest{}
-			resp, err := client.List(ctx, req)
-			if err != nil {
-				return err
-			}
-			for _, cnt := range resp.Items {
-				ids = append(ids, cnt.GetId())
-			}
+			return destroyAll(context, client)
 		} else if context.IsSet("name") {
 			ids = append(ids, context.String("name"))
 		}
@@ -208,6 +202,119 @@ func destroy(context *cli.Context, req *cubebox.DestroyCubeSandboxRequest, clien
 		log.Printf("destroy failure:%v", err)
 		return err
 	}
+	if !ret.IsSuccessCode(rsp.GetRet().GetRetCode()) {
+		return fmt.Errorf("destroy sandbox %s failed: code=%s message=%s", req.GetSandboxID(), rsp.GetRet().GetRetCode(), rsp.GetRet().GetRetMsg())
+	}
 	log.Printf("destroy rsp:%+v", rsp)
 	return nil
+}
+
+const destroyAllConcurrency = 16
+
+func destroyAll(cliContext *cli.Context, client cubebox.CubeboxMgrClient) error {
+	ctx, cancel := commands.AppContext(cliContext)
+	defer cancel()
+	return destroyAllWithContext(ctx, destroyAllConcurrency,
+		func(ctx gocontext.Context) ([]*cubebox.CubeSandbox, error) {
+			resp, err := client.List(ctx, &cubebox.ListCubeSandboxRequest{})
+			if err != nil {
+				return nil, err
+			}
+			return resp.Items, nil
+		},
+		func(ctx gocontext.Context, id string) error {
+			rsp, err := client.Destroy(ctx, &cubebox.DestroyCubeSandboxRequest{
+				RequestID: uuid.New().String(),
+				SandboxID: id,
+			})
+			if err == nil && !ret.IsSuccessCode(rsp.GetRet().GetRetCode()) {
+				err = fmt.Errorf("code=%s message=%s", rsp.GetRet().GetRetCode(), rsp.GetRet().GetRetMsg())
+			}
+			return err
+		},
+	)
+}
+
+func destroyAllWithContext(
+	ctx gocontext.Context,
+	concurrency int,
+	list func(gocontext.Context) ([]*cubebox.CubeSandbox, error),
+	destroyOne func(gocontext.Context, string) error,
+) error {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	seen := make(map[string]struct{})
+	var errs []error
+	for {
+		items, err := list(ctx)
+		if err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+
+		var ids []string
+		for _, item := range items {
+			id := item.GetId()
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			if len(seen) == 0 {
+				log.Printf("no any sandbox exits")
+			}
+			return errors.Join(errs...)
+		}
+
+		errs = append(errs, destroySandboxBatch(ctx, concurrency, ids, destroyOne)...)
+		if ctx.Err() != nil {
+			return errors.Join(append(errs, ctx.Err())...)
+		}
+	}
+}
+
+func destroySandboxBatch(
+	ctx gocontext.Context,
+	concurrency int,
+	items []string,
+	destroyOne func(gocontext.Context, string) error,
+) []error {
+	workers := min(concurrency, len(items))
+	ids := make(chan string)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range ids {
+				if err := destroyOne(ctx, id); err != nil {
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("destroy sandbox %s: %w", id, err))
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	for _, id := range items {
+		select {
+		case ids <- id:
+		case <-ctx.Done():
+			close(ids)
+			wg.Wait()
+			return errs
+		}
+	}
+	close(ids)
+	wg.Wait()
+	return errs
 }
