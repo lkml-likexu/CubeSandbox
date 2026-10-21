@@ -7,11 +7,12 @@ use std::clone::Clone;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::fs;
+use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::RawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use cgroups::freezer::FreezerState;
 use cube::rootfs::{
-    ANNO_PROPAGATION_CONTAINER_UMNTS, ANNO_PROPAGATION_EXEC_MNTS, ENV_CONTAINER_PID,
+    ANNO_PROPAGATION_CONTAINER_UMNTS, ANNO_PROPAGATION_EXEC_MNTS, ENV_CONTAINER_MOUNT_NS_FD,
 };
 use libc::pid_t;
 use nix::errno::Errno;
@@ -1049,6 +1050,8 @@ impl BaseContainer for LinuxContainer {
         if p.init {
             let spec = self.config.spec.as_mut().unwrap();
             update_namespaces(&self.logger, spec, p.pid)?;
+            p.capture_identity()
+                .map_err(|e| anyhow!("failed to capture init process identity: {}", e))?;
         }
         let init = p.init;
         p.setup_passfd_io().await;
@@ -1537,7 +1540,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn execute_hook(logger: &Logger, h: &Hook, st: &OCIState) -> Result<()> {
     let logger = logger.new(o!("action" => "execute-hook"));
-    let logger2 = logger.clone();
     let binary = PathBuf::from(h.path.as_str());
     let path = binary.canonicalize()?;
     if !path.exists() {
@@ -1589,72 +1591,70 @@ pub async fn execute_hook(logger: &Logger, h: &Hook, st: &OCIState) -> Result<()
 
     let state = serde_json::to_string(st)?;
     let path = h.path.clone();
+    let mut stdin = child.stdin.take();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
 
-    let join_handle = tokio::spawn(async move {
-        if let Some(mut stdin) = child.stdin.take() {
-            match stdin.write_all(state.as_bytes()).await {
-                Ok(_) => {}
-                Err(e) => {
-                    info!(logger, "write to child stdin failed: {:?}", e);
-                }
+    // Drain both output streams concurrently. Reading them in sequence can
+    // deadlock when the hook fills stderr while the parent is waiting for EOF
+    // on stdout (or vice versa). Keep the futures scoped here so cancellation
+    // cannot detach background readers.
+    let hook_result = tokio::time::timeout(Duration::from_secs(timeout), async {
+        if let Some(child_stdin) = stdin.as_mut() {
+            if let Err(e) = child_stdin.write_all(state.as_bytes()).await {
+                info!(logger, "write to child stdin failed: {:?}", e);
             }
         }
+        // Hooks that read until EOF must see it before we wait for them.
+        drop(stdin.take());
 
-        // read something from stdout and stderr for debug
-        if let Some(stdout) = child.stdout.as_mut() {
-            let mut out = String::new();
-            match stdout.read_to_string(&mut out).await {
-                Ok(_) => {}
-                Err(e) => {
-                    info!(logger, "read from child stdout failed: {:?}", e);
-                }
-            }
+        let (exit, stdout_result, stderr_result) = tokio::join!(
+            child.wait(),
+            stdout.read_to_string(&mut stdout_buf),
+            stderr.read_to_string(&mut stderr_buf),
+        );
+        let exit = exit.map_err(|e| anyhow!("wait child error: {}", e))?;
+
+        if let Err(e) = stdout_result {
+            info!(logger, "read from child stdout failed: {:?}", e);
+        }
+        if let Err(e) = stderr_result {
+            info!(logger, "read from child stderr failed: {:?}", e);
         }
 
-        let mut err = String::new();
-        if let Some(stderr) = child.stderr.as_mut() {
-            match stderr.read_to_string(&mut err).await {
-                Ok(_) => {}
-                Err(e) => {
-                    info!(logger, "read from child stderr failed: {:?}", e);
-                }
-            }
+        let code = exit
+            .code()
+            .ok_or_else(|| anyhow!("hook exit status has no status code"))?;
+        if code != 0 {
+            error!(
+                logger,
+                "hook {} exit status is {}, error message is {}", &path, code, stderr_buf
+            );
+            return Err(anyhow!(nix::Error::UnknownErrno));
         }
 
-        match child.wait().await {
-            Ok(exit) => {
-                let code = exit
-                    .code()
-                    .ok_or_else(|| anyhow!("hook exit status has no status code"))?;
+        debug!(logger, "hook {} exit status is 0", &path);
+        Ok(())
+    })
+    .await;
 
-                if code != 0 {
-                    error!(
-                        logger,
-                        "hook {} exit status is {}, error message is {}", &path, code, err
-                    );
-                    return Err(anyhow!(nix::Error::UnknownErrno));
-                }
-
-                debug!(logger, "hook {} exit status is 0", &path);
-                Ok(())
-            }
-            Err(e) => Err(anyhow!(
-                "wait child error: {} {}",
-                e,
-                e.raw_os_error().unwrap()
-            )),
-        }
-    });
-    match tokio::time::timeout(Duration::new(timeout, 0), join_handle).await {
-        Ok(r) => match r {
-            Ok(hook_result) => hook_result,
-            Err(join_err) => {
-                error!(logger2, "hook join error: {:?}", join_err);
-                Err(anyhow!(join_err))
-            }
-        },
+    match hook_result {
+        Ok(result) => result,
         Err(e) => {
-            error!(logger2, "timeout error: {:?}", e);
+            error!(logger, "timeout error: {:?}", e);
+            // Cancelling the timed operation leaves ownership of the child
+            // here. Kill and reap it while WAIT_PID_LOCKER is still held so
+            // the global SIGCHLD handler cannot consume its exit status.
+            drop(stdin.take());
+            if let Err(kill_err) = child.start_kill() {
+                info!(logger, "kill timed out hook failed: {:?}", kill_err);
+            }
+            if let Err(wait_err) = child.wait().await {
+                info!(logger, "reap timed out hook failed: {:?}", wait_err);
+            }
+
             Err(anyhow!(nix::Error::ETIMEDOUT))
         }
     }
@@ -1685,15 +1685,32 @@ fn valid_env(e: &str) -> Option<(&str, &str)> {
 }
 
 pub async fn start_exec_process(
-    pid: pid_t,
+    mount_namespace: File,
     exec_mnts: Option<&String>,
     propa_umnts: Option<&String>,
 ) -> Result<(), String> {
     println!("exec a child process");
     let exec_path = std::env::current_exe().map_err(|e| format!("get exe path failed:{}", e))?;
     let mut cmd = std::process::Command::new(exec_path);
+    let mount_namespace_fd = mount_namespace.as_raw_fd();
+    // Keep the parent's namespace fd CLOEXEC. Only the forked helper clears
+    // that flag before exec, so unrelated concurrent children cannot inherit
+    // this cross-container namespace capability.
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(mount_namespace_fd, libc::F_GETFD);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(mount_namespace_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     cmd.arg("exec")
-        .env(ENV_CONTAINER_PID, format!("{}", pid))
+        .env(ENV_CONTAINER_MOUNT_NS_FD, format!("{}", mount_namespace_fd))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     if let Some(mnt) = exec_mnts {
@@ -1848,13 +1865,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_hook_with_timeout() {
-        let sleep = which("sleep").await;
+        let sh = which("sh").await;
+        let dir = tempdir().unwrap();
+        let pid_file = dir.path().join("hook.pid");
+        let script = format!("echo $$ > {}; exec sleep 30", pid_file.display());
 
         let res = execute_hook(
             &slog_scope::logger(),
             &Hook {
-                path: sleep,
-                args: vec!["sleep".to_string(), "2".to_string()],
+                path: sh,
+                args: vec!["sh".to_string(), "-c".to_string(), script],
                 env: vec![],
                 timeout: Some(1),
             },
@@ -1874,6 +1894,41 @@ mod tests {
             res.unwrap_err().downcast::<nix::Error>().unwrap(),
             expected_err
         );
+
+        let pid = fs::read_to_string(pid_file).unwrap();
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "timed out hook was not reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_hook_drains_stdout_and_stderr_concurrently() {
+        let sh = which("sh").await;
+
+        execute_hook(
+            &slog_scope::logger(),
+            &Hook {
+                path: sh,
+                args: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "dd if=/dev/zero bs=131072 count=1 2>/dev/null; dd if=/dev/zero bs=131072 count=1 1>&2 2>/dev/null".to_string(),
+                ],
+                env: vec![],
+                timeout: Some(5),
+            },
+            &OCIState {
+                version: "1.2.3".to_string(),
+                id: "321".to_string(),
+                status: ContainerState::Running,
+                pid: 2,
+                bundle: "".to_string(),
+                annotations: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     #[test]
