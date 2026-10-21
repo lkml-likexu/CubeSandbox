@@ -119,11 +119,10 @@ impl VmConfig {
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
         ]);
-        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0"]);
+        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0", "mitigations=off"]);
         params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
-            "mitigations=off".to_string(),
         ]);
 
         let pmems = Self::builtin_pmems(os_image_path, agent_path);
@@ -537,11 +536,10 @@ mod tests {
             "LANG=C".to_string(),
             "raid=noautodetect".to_string(),
         ]);
-        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0"]);
+        add_x86_64_cmdlines(&mut params, &["earlyprintk=ttyS0", "mitigations=off"]);
         params.extend([
             "agent.debug_console".to_string(),
             "agent.debug_console_vport=1026".to_string(),
-            "mitigations=off".to_string(),
         ]);
         assert_eq!(config.cmdlines, params);
         #[cfg(target_arch = "aarch64")]
@@ -550,6 +548,7 @@ mod tests {
                 .cmdlines
                 .contains(&"console=ttyAMA0,115200".to_string()));
             assert!(!config.cmdlines.contains(&"earlyprintk=ttyS0".to_string()));
+            assert!(!config.cmdlines.contains(&"mitigations=off".to_string()));
         }
     }
 
@@ -563,6 +562,7 @@ mod tests {
                 "clocksource=tsc",
                 "tsc=reliable",
                 "earlyprintk=ttyS0",
+                "mitigations=off",
             ],
         );
 
@@ -574,6 +574,7 @@ mod tests {
                 "clocksource=tsc",
                 "tsc=reliable",
                 "earlyprintk=ttyS0",
+                "mitigations=off",
             ]
         );
         #[cfg(not(target_arch = "x86_64"))]
