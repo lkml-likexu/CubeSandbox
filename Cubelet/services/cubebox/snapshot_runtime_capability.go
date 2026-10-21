@@ -11,6 +11,7 @@ import (
 
 	"github.com/tencentcloud/CubeSandbox/Cubelet/pkg/controller/runtemplate/templatetypes"
 	cubeboxstore "github.com/tencentcloud/CubeSandbox/Cubelet/pkg/store/cubebox"
+	cubeletversion "github.com/tencentcloud/CubeSandbox/Cubelet/pkg/version"
 
 	"golang.org/x/mod/semver"
 )
@@ -54,11 +55,15 @@ type shimSnapshotCapability struct {
 // cannot disagree. The version itself is resolved by pinnedShimVersion, which
 // the cube-runtime path resolver also calls directly.
 func resolveShimSnapshotCapability(cb *cubeboxstore.CubeBox) shimSnapshotCapability {
+	return resolveShimSnapshotCapabilityForCommit(cb, cubeletversion.Commit)
+}
+
+func resolveShimSnapshotCapabilityForCommit(cb *cubeboxstore.CubeBox, buildCommit string) shimSnapshotCapability {
 	version, source := pinnedShimVersion(cb)
 	return shimSnapshotCapability{
 		Version:     version,
 		Source:      source,
-		Coordinated: coordinatedSnapshotSupported(version),
+		Coordinated: coordinatedSnapshotSupported(version) || sameGitRevision(version, buildCommit),
 	}
 }
 
@@ -129,6 +134,36 @@ func coordinatedSnapshotSupported(version string) bool {
 		return false
 	}
 	return rc >= boundaryRC
+}
+
+// sameGitRevision recognizes lockstep development and offline bundles that use
+// the source revision as their component inventory version. A Git object ID has
+// no ordering, so only equality with this Cubelet's own build commit is useful
+// evidence that the pinned shim contains the same snapshot actions.
+func sameGitRevision(componentVersion, buildCommit string) bool {
+	const minGitRevisionLen = 12
+
+	componentVersion = strings.ToLower(strings.TrimSpace(componentVersion))
+	buildCommit = strings.ToLower(strings.TrimSpace(buildCommit))
+	if len(componentVersion) < minGitRevisionLen || len(buildCommit) < minGitRevisionLen {
+		return false
+	}
+	if !isHexRevision(componentVersion) || !isHexRevision(buildCommit) {
+		return false
+	}
+	return strings.HasPrefix(componentVersion, buildCommit) || strings.HasPrefix(buildCommit, componentVersion)
+}
+
+func isHexRevision(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	for _, c := range value {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // canonicalShimSemver returns the canonical v-prefixed form of version, or ""
@@ -259,18 +294,16 @@ func shouldRetryWithLegacy(snapshotErr, rootfsErr error) bool {
 	return rootfsErr == nil && errors.Is(snapshotErr, errSnapshotShimIncompatible)
 }
 
-// logShimDegradedToLegacy records that the version gate selected the coordinated
-// path but the running shim rejected the action. It states the two facts that are
-// actually known -- the recorded pin is at or above the boundary, and the shim
-// rejected the action -- rather than claiming the shim advertises a capability it
-// just refused to use. The gate guessed wrong about this shim, so it is worth
-// surfacing rather than hiding.
+// logShimDegradedToLegacy records that the capability gate selected the
+// coordinated path but the running shim rejected the action. The selected pin
+// can be either an ordered semantic version or a Git revision matching this
+// Cubelet build, so the log deliberately does not claim semantic ordering.
 //
 // version is non-empty by construction: the retry only runs on the coordinated
 // path, which requires a resolved pin.
 func logShimDegradedToLegacy(logger snapshotPathLogger, version string) {
 	logger.Warnf(
-		"recorded CubeShim pin %s is at or above the coordinated snapshot boundary %s, "+
+		"recorded CubeShim pin %s selected coordinated snapshots (semantic boundary %s), "+
 			"but the running shim rejected the coordinated action; retrying this snapshot "+
 			"with the legacy best-effort path",
 		version, minCoordinatedSnapshotShimVersion,

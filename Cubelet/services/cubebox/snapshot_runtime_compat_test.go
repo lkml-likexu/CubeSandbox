@@ -16,6 +16,7 @@ import (
 
 	"github.com/tencentcloud/CubeSandbox/Cubelet/pkg/controller/runtemplate/templatetypes"
 	cubeboxstore "github.com/tencentcloud/CubeSandbox/Cubelet/pkg/store/cubebox"
+	cubeletversion "github.com/tencentcloud/CubeSandbox/Cubelet/pkg/version"
 	"github.com/tencentcloud/CubeSandbox/Cubelet/storage"
 
 	"github.com/stretchr/testify/require"
@@ -92,6 +93,32 @@ func TestCoordinatedSnapshotSupportedBoundary(t *testing.T) {
 	}
 }
 
+func TestSameGitRevision(t *testing.T) {
+	const commit = "dbac5d0cda5d4c1ca5da0b7f80d8e55be310a3ea"
+
+	for _, tc := range []struct {
+		name    string
+		version string
+		build   string
+		want    bool
+	}{
+		{"full_revision", commit, commit, true},
+		{"short_inventory_revision", commit[:12], commit, true},
+		{"short_build_revision", commit, commit[:12], true},
+		{"case_insensitive", strings.ToUpper(commit), commit, true},
+		{"different_revision", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit, false},
+		{"too_short", commit[:11], commit, false},
+		{"unknown_build", commit, "unknown", false},
+		{"semantic_version", "v0.7.3", commit, false},
+		{"digest_inventory_key", "sha256-0123456789ab", commit, false},
+		{"empty", "", commit, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, sameGitRevision(tc.version, tc.build))
+		})
+	}
+}
+
 func TestResolveShimSnapshotCapabilityFromPins(t *testing.T) {
 	t.Run("component_pin_wins", func(t *testing.T) {
 		cb := &cubeboxstore.CubeBox{
@@ -126,6 +153,44 @@ func TestResolveShimSnapshotCapabilityFromPins(t *testing.T) {
 		require.Equal(t, "v0.7.2", capability.Version)
 		require.Equal(t, shimVersionSourceRunTemplate, capability.Source)
 		require.True(t, capability.Coordinated)
+	})
+
+	t.Run("matching_build_revision", func(t *testing.T) {
+		const commit = "dbac5d0cda5d4c1ca5da0b7f80d8e55be310a3ea"
+		cb := &cubeboxstore.CubeBox{ComponentVersions: map[string]string{
+			templatetypes.CubeComponentCubeShim: commit,
+		}}
+
+		capability := resolveShimSnapshotCapabilityForCommit(cb, commit)
+
+		require.Equal(t, commit, capability.Version)
+		require.Equal(t, shimVersionSourceComponentPin, capability.Source)
+		require.True(t, capability.Coordinated)
+	})
+
+	t.Run("production_resolver_uses_build_revision", func(t *testing.T) {
+		const commit = "dbac5d0cda5d4c1ca5da0b7f80d8e55be310a3ea"
+		oldCommit := cubeletversion.Commit
+		cubeletversion.Commit = commit
+		t.Cleanup(func() { cubeletversion.Commit = oldCommit })
+		cb := &cubeboxstore.CubeBox{ComponentVersions: map[string]string{
+			templatetypes.CubeComponentCubeShim: commit,
+		}}
+
+		require.True(t, resolveShimSnapshotCapability(cb).Coordinated)
+	})
+
+	t.Run("unrelated_build_revision", func(t *testing.T) {
+		cb := &cubeboxstore.CubeBox{ComponentVersions: map[string]string{
+			templatetypes.CubeComponentCubeShim: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		}}
+
+		capability := resolveShimSnapshotCapabilityForCommit(
+			cb,
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		)
+
+		require.False(t, capability.Coordinated)
 	})
 
 	// A sandbox with no pin takes the legacy path rather than being back-filled
