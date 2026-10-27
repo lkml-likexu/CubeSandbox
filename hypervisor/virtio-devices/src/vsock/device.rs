@@ -52,8 +52,7 @@ use virtio_bindings::bindings::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
 use virtio_queue::Queue;
 use virtio_queue::QueueOwnedT;
 use virtio_queue::QueueT;
-use vm_memory::GuestAddressSpace;
-use vm_memory::GuestMemoryAtomic;
+use vm_memory::{GuestAddressSpace, GuestMemoryAtomic};
 use vm_migration::{Migratable, MigratableError, Pausable, Snapshot, Snapshottable, Transportable};
 use vm_virtio::AccessPlatform;
 use vmm_sys_util::eventfd::EventFd;
@@ -135,6 +134,7 @@ where
             ) {
                 Ok(mut pkt) => {
                     if self.backend.write().unwrap().recv_pkt(&mut pkt).is_ok() {
+                        pkt.mark_dirty(desc_chain.memory());
                         pkt.hdr().len() as u32 + pkt.len()
                     } else {
                         // We are using a consuming iterator over the virtio buffers, so, if we can't
@@ -613,6 +613,8 @@ mod tests {
     use crate::ActivateError;
     use libc::EFD_NONBLOCK;
     use virtio_bindings::bindings::virtio_ring::VRING_DESC_F_WRITE;
+    use vm_memory::bitmap::Bitmap;
+    use vm_memory::{GuestAddress, GuestMemory, GuestMemoryRegion};
 
     #[test]
     fn test_virtio_device() {
@@ -941,6 +943,20 @@ mod tests {
             assert_eq!(ctx.guest_rxvq.used.event.get(), 2);
             assert_eq!(ctx.irq_count(), 1);
         }
+    }
+
+    #[test]
+    fn test_rx_marks_guest_memory_dirty_after_backend_write() {
+        let test_ctx = TestContext::new();
+        let mut ctx = test_ctx.create_epoll_handler_context_eventidx();
+        let region = test_ctx.mem.find_region(GuestAddress(0)).unwrap();
+        region.bitmap().reset();
+
+        ctx.handler.backend.write().unwrap().set_pending_rx(true);
+        ctx.signal_rxq_event();
+
+        assert!(region.bitmap().dirty_at(0x0040_0000));
+        assert!(!region.bitmap().dirty_at(0x0040_1000));
     }
 
     #[test]

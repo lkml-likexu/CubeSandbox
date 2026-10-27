@@ -26,7 +26,8 @@ use super::{Result, VsockError};
 use crate::get_host_address_range;
 use crate::vsock::defs::uapi;
 use virtio_queue::DescriptorChain;
-use vm_memory::{Address, GuestMemory};
+use vm_memory::bitmap::Bitmap;
+use vm_memory::{Address, GuestMemory, GuestMemoryRegion, VolatileMemory};
 use vm_virtio::{AccessPlatform, Translatable};
 // The vsock packet header is defined by the C struct:
 //
@@ -300,7 +301,11 @@ impl VsockPacket {
         // Prior to Linux v6.3 there are two descriptors
         if head.has_next() {
             let buf_desc = desc_chain.next().ok_or(VsockError::BufDescMissing)?;
+            if !buf_desc.is_write_only() {
+                return Err(VsockError::UnwritableDescriptor);
+            }
             let buf_size = buf_desc.len() as usize;
+            let buf_addr = buf_desc.addr().translate_gva(access_platform, buf_size);
 
             Ok(Self {
                 hdr: get_host_address_range(
@@ -311,17 +316,18 @@ impl VsockPacket {
                 )
                 .ok_or(VsockError::GuestMemory)?,
                 buf: Some(
-                    get_host_address_range(
-                        desc_chain.memory(),
-                        buf_desc.addr().translate_gva(access_platform, buf_size),
-                        buf_size,
-                    )
-                    .ok_or(VsockError::GuestMemory)?,
+                    get_host_address_range(desc_chain.memory(), buf_addr, buf_size)
+                        .ok_or(VsockError::GuestMemory)?,
                 ),
                 buf_size,
             })
         } else {
             let buf_size: usize = head.len() as usize - VSOCK_PKT_HDR_SIZE;
+            let buf_addr = head
+                .addr()
+                .checked_add(VSOCK_PKT_HDR_SIZE as u64)
+                .unwrap()
+                .translate_gva(access_platform, buf_size);
             Ok(Self {
                 hdr: get_host_address_range(
                     desc_chain.memory(),
@@ -331,15 +337,8 @@ impl VsockPacket {
                 )
                 .ok_or(VsockError::GuestMemory)?,
                 buf: Some(
-                    get_host_address_range(
-                        desc_chain.memory(),
-                        head.addr()
-                            .checked_add(VSOCK_PKT_HDR_SIZE as u64)
-                            .unwrap()
-                            .translate_gva(access_platform, buf_size),
-                        buf_size,
-                    )
-                    .ok_or(VsockError::GuestMemory)?,
+                    get_host_address_range(desc_chain.memory(), buf_addr, buf_size)
+                        .ok_or(VsockError::GuestMemory)?,
                 ),
                 buf_size,
             })
@@ -390,6 +389,24 @@ impl VsockPacket {
             // from the virtq descriptor.
             unsafe { std::slice::from_raw_parts_mut(ptr, self.buf_size) }
         })
+    }
+
+    pub fn mark_dirty<M: GuestMemory>(&self, memory: &M) {
+        for (ptr, len) in std::iter::once((self.hdr, VSOCK_PKT_HDR_SIZE))
+            .chain(self.buf.map(|ptr| (ptr, self.len() as usize)))
+        {
+            if len == 0 {
+                continue;
+            }
+            if let Some((region, start)) = memory.iter().find_map(|region| {
+                let start = region.as_volatile_slice().ok()?.ptr_guard().as_ptr() as usize;
+                let end = start.checked_add(region.len() as usize)?;
+                let ptr = ptr as usize;
+                (ptr >= start && ptr.checked_add(len)? <= end).then_some((region, start))
+            }) {
+                region.bitmap().mark_dirty(ptr as usize - start, len);
+            }
+        }
     }
 
     pub fn src_cid(&self) -> u64 {
@@ -657,6 +674,13 @@ mod tests {
         {
             create_context!(test_ctx, handler_ctx);
             handler_ctx.guest_rxvq.dtable[0].flags.set(0);
+            expect_asm_error!(rx, test_ctx, handler_ctx, VsockError::UnwritableDescriptor);
+        }
+
+        // Test case: read-only RX packet buffer.
+        {
+            create_context!(test_ctx, handler_ctx);
+            handler_ctx.guest_rxvq.dtable[1].flags.set(0);
             expect_asm_error!(rx, test_ctx, handler_ctx, VsockError::UnwritableDescriptor);
         }
 

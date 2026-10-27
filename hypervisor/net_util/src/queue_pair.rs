@@ -251,21 +251,23 @@ impl RxVirtio {
             let mut next_desc = Some(desc);
 
             let mut iovecs = Vec::new();
+            let mut dirty_ranges = Vec::new();
             while let Some(desc) = next_desc {
                 let desc_addr = desc
                     .addr()
                     .translate_gva(access_platform, desc.len() as usize);
                 if desc.is_write_only() && desc.len() > 0 {
-                    let buf = desc_chain
+                    let slice = desc_chain
                         .memory()
                         .get_slice(desc_addr, desc.len() as usize)
-                        .map_err(NetQueuePairError::GuestMemory)?
-                        .ptr_guard_mut();
+                        .map_err(NetQueuePairError::GuestMemory)?;
+                    let buf = slice.ptr_guard_mut();
                     let iovec = libc::iovec {
                         iov_base: buf.as_ptr() as *mut libc::c_void,
                         iov_len: desc.len() as libc::size_t,
                     };
                     iovecs.push(iovec);
+                    dirty_ranges.push((desc_addr, desc.len() as usize));
                 } else {
                     error!(
                         "Invalid descriptor chain: address = 0x{:x} length = {} write_only = {}",
@@ -298,6 +300,25 @@ impl RxVirtio {
 
                     error!("net: rx: failed reading from tap: {}", e);
                     return Err(NetQueuePairError::ReadTap(e));
+                }
+
+                // readv writes through raw pointers, bypassing vm-memory's
+                // automatic dirty tracking. Mark exactly the bytes written,
+                // after the syscall, so a concurrent bitmap reset cannot erase
+                // the indication before the corresponding memory write.
+                let mut remaining = result as usize;
+                for (addr, len) in dirty_ranges {
+                    let written = remaining.min(len);
+                    if written == 0 {
+                        break;
+                    }
+                    desc_chain
+                        .memory()
+                        .get_slice(addr, written)
+                        .map_err(NetQueuePairError::GuestMemory)?
+                        .bitmap()
+                        .mark_dirty(0, written);
+                    remaining -= written;
                 }
 
                 // Write num_buffers to guest memory. We simply write 1 as we
@@ -550,10 +571,13 @@ impl NetQueuePair {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_log_dropped, NetCounters, TxVirtio};
+    use super::{should_log_dropped, NetCounters, RxVirtio, TxVirtio};
+    use std::fs::OpenOptions;
+    use std::io::{Seek, Write};
     use std::num::Wrapping;
     use std::sync::atomic::Ordering;
-    use vm_memory::{GuestAddress, GuestMemoryMmap};
+    use vm_memory::bitmap::{AtomicBitmap, Bitmap};
+    use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
     use vm_virtio::queue::testing::VirtQueue as GuestQ;
 
     #[test]
@@ -587,6 +611,60 @@ mod tests {
         assert_eq!(guest_queue.used.idx.get(), 1);
         assert_eq!(tx.malformed_frames, Wrapping(1));
         assert_eq!(tx.dropped_frames, Wrapping(0));
+    }
+
+    #[test]
+    fn rx_marks_raw_readv_destination_dirty() {
+        const QUEUE_ADDRESS: GuestAddress = GuestAddress(0x1_0000);
+        const FRAME_ADDRESS: GuestAddress = GuestAddress(0x2_0000);
+        let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let frame_size = (host_page_size * 2) as u32;
+
+        let memory =
+            GuestMemoryMmap::<AtomicBitmap>::from_ranges(&[(GuestAddress(0), 0x5_0000)]).unwrap();
+        let guest_queue = GuestQ::new(QUEUE_ADDRESS, &memory, 4);
+        guest_queue.dtable[0].set(FRAME_ADDRESS.0, frame_size, 2, 0);
+        guest_queue.avail.ring[0].set(0);
+        guest_queue.avail.idx.set(1);
+        let mut queue = guest_queue.create_queue();
+
+        let path = std::env::temp_dir().join(format!(
+            "net-util-rx-dirty-{}-{}",
+            std::process::id(),
+            FRAME_ADDRESS.0
+        ));
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&vec![0u8; frame_size as usize]).unwrap();
+        file.rewind().unwrap();
+        let mut tap = super::Tap::from_file_for_test(file);
+        let mut rx = RxVirtio::new();
+        rx.process_desc_chain(
+            &memory,
+            &mut tap,
+            &mut queue,
+            &mut None,
+            None,
+            &mut std::sync::Once::new(),
+        )
+        .unwrap();
+
+        let region = memory.find_region(GuestAddress(0)).unwrap();
+        assert!(!region
+            .bitmap()
+            .dirty_at(FRAME_ADDRESS.0 as usize - host_page_size));
+        assert!(region.bitmap().dirty_at(FRAME_ADDRESS.0 as usize));
+        assert!(region
+            .bitmap()
+            .dirty_at(FRAME_ADDRESS.0 as usize + host_page_size));
+        assert!(!region
+            .bitmap()
+            .dirty_at(FRAME_ADDRESS.0 as usize + 2 * host_page_size));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
