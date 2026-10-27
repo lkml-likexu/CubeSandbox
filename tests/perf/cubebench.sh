@@ -448,7 +448,7 @@ section_summary() {
 	4.2) echo "snapshot creation time as the dirty page size grows." ;;
 	4.3) echo "time to start sandboxes from a Snapshot." ;;
 	4.4) echo "time to roll back to a Snapshot." ;;
-	4.5) echo "time to clone a sandbox." ;;
+	4.5) echo "single-wave clone time at different concurrency levels (includes snapshot phase)." ;;
 	4.6) echo "time to pause and resume a sandbox." ;;
 	esac
 }
@@ -1037,10 +1037,14 @@ section_4_5() {
 	local failed=0 total=4
 	: >"$DATA_TXT"
 	run_bench_tier python bench_clone_concurrency.py -n 1 -c 1 --rounds 5 --no-header || failed=$((failed + 1))
-	run_bench_tier python bench_clone_concurrency.py -n 100 -c 10 --rounds 2 --no-header || failed=$((failed + 1))
-	run_bench_tier python bench_clone_concurrency.py -n 100 -c 20 --rounds 2 --no-header || failed=$((failed + 1))
-	run_bench_tier python bench_clone_concurrency.py -n 100 -c 50 --rounds 2 --no-header || failed=$((failed + 1))
+	run_bench_tier python bench_clone_concurrency.py -n 10 -c 10 --rounds 3 --no-header || failed=$((failed + 1))
+	run_bench_tier python bench_clone_concurrency.py -n 30 -c 30 --rounds 3 --no-header || failed=$((failed + 1))
+	run_bench_tier python bench_clone_concurrency.py -n 50 -c 50 --rounds 3 --no-header || failed=$((failed + 1))
 
+	{
+		echo "> Note: each tier measures one clone wave (n = concurrency); wall time includes the Snapshot phase performed by Sandbox.clone()."
+		echo ""
+	} | tee -a "$OUTPUT_MD"
 	emit_section_table "$failed" "$total" "$DATA_TXT" \
 		"| n | Concurrency | Rounds | wall avg | wall min | wall p95 | wall max | per-clone avg |" \
 		"|:----:|:---:|:----:|--------:|--------:|--------:|--------:|-------------:|"
