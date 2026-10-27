@@ -7,12 +7,12 @@ Clones `n` sandboxes from one running source sandbox at the given `concurrency`,
 reporting wall time and per-clone amortized time over `rounds` measured rounds.
 
 This script provides the mechanism for ONE scenario per invocation, mirroring
-cube-bench. Sweep multiple scenarios by invoking it repeatedly, e.g.:
+cube-bench. Set `n` equal to `concurrency` to measure one clone wave, e.g.:
 
-    python bench_clone_concurrency.py -n 1   -c 1  --rounds 5
-    python bench_clone_concurrency.py -n 100 -c 10 --rounds 2
-    python bench_clone_concurrency.py -n 100 -c 20 --rounds 2
-    python bench_clone_concurrency.py -n 100 -c 50 --rounds 2
+    python bench_clone_concurrency.py -n 1  -c 1  --rounds 5
+    python bench_clone_concurrency.py -n 10 -c 10 --rounds 3
+    python bench_clone_concurrency.py -n 30 -c 30 --rounds 3
+    python bench_clone_concurrency.py -n 50 -c 50 --rounds 3
 """
 
 import argparse
