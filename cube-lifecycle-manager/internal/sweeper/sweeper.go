@@ -295,16 +295,24 @@ func (s *Sweeper) tryPause(ctx context.Context, e registry.Entry) error {
 			if !errors.As(pauseErr, &apiErr) {
 				return errors.New("cubemaster pause result unknown: " + pauseErr.Error())
 			}
-			// Real failure (definitive APIError). Roll back pausing to running
-			// so a waiting dataplane request observes the usable sandbox. CAS
-			// prevents this failed pause from overwriting a newer transition.
-			updated, writeErr := s.o.Redis.WriteStateCAS(ctx, sid, "pausing", "running", s.o.StateLockTTL)
-			if writeErr != nil {
-				s.o.Log.Warn("write pause rollback state failed",
-					zap.String("sandbox_id", sid), zap.Error(writeErr))
+			// Real failure (definitive APIError). Release pausing ownership so
+			// the next sweep can retry. The conditional delete cannot erase a
+			// newer transition that won after this RPC completed.
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), terminalWriteReserve)
+			cleared, clearErr := s.o.Redis.ClearStateCAS(rollbackCtx, sid, "pausing")
+			rollbackCancel()
+			if clearErr != nil {
+				s.o.Log.Warn("clear pause rollback state failed",
+					zap.String("sandbox_id", sid), zap.Error(clearErr))
 			}
-			if updated {
-				_ = s.o.ProxyPush.SetState(ctx, sid, "running")
+			// A definitive CubeMaster rejection means this pause did not apply, so
+			// unblock the dataplane even when Redis rollback is temporarily
+			// unavailable. A clean CAS mismatch means a newer transition owns the
+			// state and must not be overwritten.
+			if cleared || clearErr != nil {
+				pushCtx, pushCancel := context.WithTimeout(context.Background(), advisoryPushTimeout)
+				_ = s.o.ProxyPush.SetState(pushCtx, sid, "running")
+				pushCancel()
 			}
 			return errors.New("cubemaster pause: " + pauseErr.Error())
 		}
@@ -312,16 +320,25 @@ func (s *Sweeper) tryPause(ctx context.Context, e registry.Entry) error {
 
 	// Publish to the proxy before waking Redis waiters. A request waiting on
 	// pausing can resume as soon as Redis becomes paused; pushing afterward could
-	// let this stale pause overwrite the resumer's newer running state.
-	if err := s.o.ProxyPush.SetState(ctx, sid, "paused"); err != nil {
+	// let this stale pause overwrite the resumer's newer running state. Keep the
+	// advisory push bounded so it cannot consume the terminal-write reserve.
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), advisoryPushTimeout)
+	if err := s.o.ProxyPush.SetState(pushCtx, sid, "paused"); err != nil {
 		s.o.Log.Warn("push paused state failed",
 			zap.String("sandbox_id", sid), zap.Error(err))
 	}
-	if err := s.o.Redis.WriteState(ctx, sid, "paused", s.o.StateLockTTL); err != nil {
+	pushCancel()
+
+	// Write the local terminal state before WriteState publishes its wakeup.
+	// Otherwise a local waiter can complete a resume and set running, only for
+	// this stale pause path to overwrite the registry afterward.
+	s.o.Registry.SetRuntimeState(sid, lifecycle.StatePaused)
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), terminalWriteReserve)
+	if err := s.o.Redis.WriteState(writeCtx, sid, "paused", s.o.StateLockTTL); err != nil {
 		s.o.Log.Warn("write paused state failed",
 			zap.String("sandbox_id", sid), zap.Error(err))
 	}
-	s.o.Registry.SetRuntimeState(sid, lifecycle.StatePaused)
+	writeCancel()
 
 	s.pauseTriggered.Add(1)
 	s.o.Log.Info("auto-paused sandbox",

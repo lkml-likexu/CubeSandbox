@@ -5,9 +5,10 @@
 -- Reads the per-sandbox state from cube_sandbox_state (a worker-shared dict
 -- maintained by Cube Lifecycle Manager (CLM) over the admin server) and either:
 --   - lets the request through (state == "running" or unknown / not paused),
+--   - returns 503 Retry-After while the sandbox is mid-pause,
 --   - returns 410 when the sandbox is being or has been killed,
---   - or fires an internal sub-request to CLM's /internal/resume for paused
---     and mid-pause sandboxes, blocking until the sandbox is alive again.
+--   - or fires an internal sub-request to CLM's /internal/resume for a paused
+--     sandbox, blocking until the sandbox is alive again.
 --
 -- Failure modes are biased towards availability:
 --   * State dict missing or empty entry  -> always pass (CLM hasn't
@@ -53,7 +54,18 @@ function _M.gate(ins_id)
         utils:respond_gone()
     end
 
-    if state ~= "paused" and state ~= "pausing" then
+    if state == "pausing" then
+        -- An ordinary pause finishes quickly and the client can retry. Keeping
+        -- this path fail-fast is also important when CubeMaster's result is
+        -- ambiguous and CLM deliberately retains pausing until the lock TTL.
+        ngx.log(ngx.WARN, "LEVEL_WARN||",
+            string.format("request %s sandbox %s is pausing; returning 503",
+                ngx.var.http_x_cube_request_id or "-", ins_id))
+        ngx.header["Retry-After"] = "2"
+        utils:respond_unavailable()
+    end
+
+    if state ~= "paused" then
         -- Unknown state — log once and let the request through; resume logic
         -- only fires for pause states to keep behaviour predictable as new
         -- states are added.
@@ -63,8 +75,7 @@ function _M.gate(ins_id)
         return
     end
 
-    -- state is paused or pausing: ask CLM to finish the transition and resume,
-    -- then continue the original request.
+    -- state is paused: ask CLM to resume, then continue the original request.
     if not ngx.var.cube_sidecar_addr or ngx.var.cube_sidecar_addr == "" then
         ngx.log(ngx.ERR, "LEVEL_ERROR||",
             string.format("sandbox %s is in pause state but cube_sidecar_addr is unset; dataplane will fail",

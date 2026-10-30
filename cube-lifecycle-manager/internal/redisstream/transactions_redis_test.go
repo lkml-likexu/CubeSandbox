@@ -64,6 +64,30 @@ func TestRedisTransactionsProtectResumeOwnership(t *testing.T) {
 	}
 }
 
+func TestClearStateCASOnlyReleasesMatchingOwner(t *testing.T) {
+	client, rdb := newTestClient(t)
+	ctx := context.Background()
+
+	if err := client.SetState(ctx, "sbx", "pausing", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := client.ClearStateCAS(ctx, "sbx", "resuming")
+	if err != nil || cleared {
+		t.Fatalf("mismatched ClearStateCAS() = (%v, %v)", cleared, err)
+	}
+	if got := rdb.Get(ctx, lifecycle.StateKey("sbx")).Val(); got != "pausing" {
+		t.Fatalf("mismatched CAS changed state to %q", got)
+	}
+
+	cleared, err = client.ClearStateCAS(ctx, "sbx", "pausing")
+	if err != nil || !cleared {
+		t.Fatalf("matching ClearStateCAS() = (%v, %v)", cleared, err)
+	}
+	if rdb.Exists(ctx, lifecycle.StateKey("sbx")).Val() != 0 {
+		t.Fatal("matching CAS did not delete state")
+	}
+}
+
 func TestRedisTransactionsProtectKillOwnership(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := context.Background()

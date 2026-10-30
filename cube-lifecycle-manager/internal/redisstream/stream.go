@@ -434,6 +434,47 @@ func (c *Client) WriteStateCAS(
 	return false, fmt.Errorf("write state cas %s: transaction conflicted after %d attempts", key, maxAttempts)
 }
 
+// ClearStateCAS deletes a state only if its value still matches expected. This
+// releases failed transition ownership without deleting a newer transition.
+func (c *Client) ClearStateCAS(ctx context.Context, sandboxID, expected string) (bool, error) {
+	const maxAttempts = 3
+	key := lifecycle.StateKey(sandboxID)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		deleted := false
+		err := c.rdb.Watch(ctx, func(tx *redis.Tx) error {
+			current, getErr := tx.Get(ctx, key).Result()
+			if errors.Is(getErr, redis.Nil) {
+				return nil
+			}
+			if getErr != nil {
+				return getErr
+			}
+			if current != expected {
+				return nil
+			}
+			_, txErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(ctx, key)
+				return nil
+			})
+			if txErr == nil {
+				deleted = true
+			}
+			return txErr
+		}, key)
+		if errors.Is(err, redis.TxFailedErr) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("clear state cas %s: %w", key, err)
+		}
+		if deleted {
+			c.publishNotify(sandboxID)
+		}
+		return deleted, nil
+	}
+	return false, fmt.Errorf("clear state cas %s: transaction conflicted after %d attempts", key, maxAttempts)
+}
+
 // ClearStateNotify is the ClearState + Pub/Sub companion used on rollback.
 func (c *Client) ClearStateNotify(ctx context.Context, sandboxID string) error {
 	if err := c.ClearState(ctx, sandboxID); err != nil {

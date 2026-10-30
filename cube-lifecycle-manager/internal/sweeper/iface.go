@@ -25,6 +25,9 @@ type stateStore interface {
 	// See internal/resumer/iface.go for the same contract.
 	WriteState(ctx context.Context, sandboxID, state string, ttl time.Duration) error
 	WriteStateCAS(ctx context.Context, sandboxID, expected, state string, ttl time.Duration) (bool, error)
+	// ClearStateCAS removes a transition marker only when it is still owned by
+	// the caller, and publishes a wakeup when the delete succeeds.
+	ClearStateCAS(ctx context.Context, sandboxID, expected string) (bool, error)
 	ClearStateNotify(ctx context.Context, sandboxID string) error
 }
 

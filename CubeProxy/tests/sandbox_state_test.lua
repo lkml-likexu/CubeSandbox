@@ -68,9 +68,9 @@ assert(captures == 1)
 assert(state_value == "running")
 
 ok, err = run("pausing")
-assert(ok and err == nil)
-assert(captures == 1)
-assert(state_value == "running")
+assert(not ok and type(err) == "table" and err.status == 503)
+assert(captures == 0)
+assert(ngx.header["Retry-After"] == "2")
 
 ok, err = run("killed")
 assert(not ok and type(err) == "table" and err.status == 410)
