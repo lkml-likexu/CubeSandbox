@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from framework.restart_policy import (
@@ -78,7 +80,14 @@ def test_exit_zero_command_backgrounds_sigterm() -> None:
     assert EXIT_ZERO_COMMAND.rstrip().endswith("&")
 
 
-def test_exit_error_script_calls_exit_group() -> None:
+def test_exit_error_script_calls_exit_group_on_supported_architectures() -> None:
+    ast.parse(EXIT_ERROR_SCRIPT)
+    assert 'machine in ("x86_64", "amd64")' in EXIT_ERROR_SCRIPT
     assert "regs.rax = 231" in EXIT_ERROR_SCRIPT
     assert "regs.rdi = 1" in EXIT_ERROR_SCRIPT
-    assert EXIT_ERROR_LAUNCH.rstrip().endswith("&")
+    assert 'machine in ("aarch64", "arm64")' in EXIT_ERROR_SCRIPT
+    assert "regs.regs[8] = 94" in EXIT_ERROR_SCRIPT
+    assert "regs.regs[0] = 1" in EXIT_ERROR_SCRIPT
+    assert "0xD4000001" in EXIT_ERROR_SCRIPT
+    assert "unsupported guest architecture" in EXIT_ERROR_SCRIPT
+    assert EXIT_ERROR_LAUNCH == f"python3 /tmp/cube-e2e-exit1.py"
