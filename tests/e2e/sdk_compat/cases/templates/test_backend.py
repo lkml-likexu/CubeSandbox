@@ -11,6 +11,7 @@ and is therefore not exercised here.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -65,7 +66,7 @@ def test_template_build_forwards_backend_to_create_request(
     try:
         with template_build_slot(label="backend_xfs_forward"):
             job = Template.build(
-                image=DEFAULT_IMAGE,
+                image=os.environ.get("CUBE_TEMPLATE_E2E_IMAGE") or DEFAULT_IMAGE,
                 writable_layer_size=DEFAULT_WRITABLE_LAYER_SIZE,
                 backend="xfs",
                 config=cfg,
