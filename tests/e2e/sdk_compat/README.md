@@ -169,7 +169,7 @@ pytest --run-e2e --sdk-e2e-trace \
 Run dual backend after installing E2B:
 
 ```bash
-pip install e2b-code-interpreter
+pip install 'e2b==2.39.1' 'e2b-code-interpreter==2.9.1'
 export E2B_API_KEY=<your-e2b-api-key>
 export SSL_CERT_FILE=/root/.local/share/mkcert/rootCA.pem
 export SDK_E2E_BACKENDS=e2b,cubesandbox
@@ -255,9 +255,9 @@ Notes that make the matrix more than a version list:
   did not fire), and worked on the v0.5.1 release — while envd self-reported
   `0.5.11` on both builds. Compatibility therefore has to be stated per
   CubeSandbox release, not derived from envd's version.
-- **`e2b-code-interpreter` versions its own way.** Its 2.9.0 requires
-  `e2b>=2.26.0,<3.0.0`, so a row pinning an older `e2b` cannot also take the
-  current interpreter package — the `run_code` cases are unavailable there.
+- **`e2b-code-interpreter` versions its own way.** Version 2.9.0 declares
+  `e2b>=2.26.0,<3.0.0`, although core 2.38.0–2.39.0 break its transport call.
+  Version 2.9.1 raises the floor to the repaired `e2b>=2.39.1`.
 - **Cases that need the interpreter.** Lines without `e2b-code-interpreter`
   should deselect on `requires_code_interpreter`
   (`-m "(smoke or p0) and not requires_code_interpreter"`) rather than report

@@ -154,7 +154,7 @@ pytest --run-e2e --sdk-e2e-trace \
 ### E2B 双后端
 
 ```bash
-pip install e2b-code-interpreter
+pip install 'e2b==2.39.1' 'e2b-code-interpreter==2.9.1'
 export E2B_API_KEY=<e2b-api-key>
 export SSL_CERT_FILE=/root/.local/share/mkcert/rootCA.pem
 export SDK_E2E_BACKENDS=e2b,cubesandbox
@@ -223,9 +223,9 @@ pytest --run-e2e --sdk-e2e-backends=e2b -m "(smoke or p0) and not requires_code_
   envd 上静默挂死（SDK 自带的 timeout 不生效），在 v0.5.1 正式版上正常——而两个构建里
   envd 自报的版本都是 `0.5.11`。所以兼容性必须按 CubeSandbox 版本声明，不能从 envd
   版本推导。
-- **`e2b-code-interpreter` 有自己的版本序列。** 它的 2.9.0 要求
-  `e2b>=2.26.0,<3.0.0`，因此固定较低 `e2b` 版本的组合无法同时使用当前的 interpreter
-  包，该组合下 `run_code` 用例不可用。
+- **`e2b-code-interpreter` 有自己的版本序列。** 2.9.0 虽声明
+  `e2b>=2.26.0,<3.0.0`，但核心包 2.38.0–2.39.0 会破坏其 transport 调用；2.9.1
+  将最低版本提高到已修复的 `e2b>=2.39.1`。
 - **依赖 interpreter 的用例。** 未安装 `e2b-code-interpreter` 的组合应按 capability
   marker 排除（`-m "(smoke or p0) and not requires_code_interpreter"`），而不是把
   "缺包"报成失败。只排除 `run_code` marker 不够：它仅覆盖 `cases/run_code/`，而

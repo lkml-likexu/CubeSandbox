@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import time
 from typing import Any, Callable, TypeVar
@@ -118,14 +119,45 @@ def _check_backend_dependencies(backends: tuple[str, ...], errors: list[str]) ->
             errors.append(f"cubesandbox backend requires the CubeSandbox Python SDK: {exc}")
 
     if "e2b" in backends:
-        if _can_import("e2b_code_interpreter") or _can_import("e2b"):
+        has_interpreter = _can_import("e2b_code_interpreter")
+        if has_interpreter or _can_import("e2b"):
+            if has_interpreter:
+                _check_e2b_interpreter_transport(errors)
             if not os.environ.get("E2B_API_KEY"):
                 errors.append("e2b backend requires E2B_API_KEY")
         else:
             errors.append(
                 "e2b backend requires e2b-code-interpreter or e2b. "
-                "Install tests/e2e/sdk_compat/requirements.txt."
+                "Install an explicit pair from tests/e2e/sdk_compat/e2b-versions.txt."
             )
+
+
+def _check_e2b_interpreter_transport(errors: list[str]) -> None:
+    try:
+        client_sync = importlib.import_module("e2b.api.client_sync")
+        interpreter_sync = importlib.import_module(
+            "e2b_code_interpreter.code_interpreter_sync"
+        )
+        parameters = inspect.signature(client_sync.get_transport).parameters
+        accepts_http2 = "http2" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        getter = interpreter_sync.Sandbox._client.fget
+        passes_http2 = getter is not None and any(
+            isinstance(value, tuple) and "http2" in value
+            for value in getter.__code__.co_consts
+        )
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        errors.append(f"cannot inspect E2B transport compatibility: {exc}")
+        return
+    if passes_http2 and not accepts_http2:
+        errors.append(
+            "installed e2b-code-interpreter calls get_transport(..., http2=False), "
+            "but the installed e2b core does not accept http2. Install "
+            "'e2b==2.37.1' 'e2b-code-interpreter==2.9.0' or "
+            "'e2b==2.39.1' 'e2b-code-interpreter==2.9.1'."
+        )
 
 
 def _can_import(module: str) -> bool:
