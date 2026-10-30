@@ -5,11 +5,9 @@
 -- Reads the per-sandbox state from cube_sandbox_state (a worker-shared dict
 -- maintained by Cube Lifecycle Manager (CLM) over the admin server) and either:
 --   - lets the request through (state == "running" or unknown / not paused),
---   - returns 503 Retry-After when the sandbox is mid-pause (avoid the race
---     where we'd resume something CLM is actively pausing),
 --   - returns 410 when the sandbox is being or has been killed,
---   - or fires an internal sub-request to CLM's /internal/resume,
---     blocking the dataplane request until the sandbox is alive again.
+--   - or fires an internal sub-request to CLM's /internal/resume for paused
+--     and mid-pause sandboxes, blocking until the sandbox is alive again.
 --
 -- Failure modes are biased towards availability:
 --   * State dict missing or empty entry  -> always pass (CLM hasn't
@@ -48,15 +46,6 @@ function _M.gate(ins_id)
         return
     end
 
-    if state == "pausing" then
-        -- CLM is mid-flight; better to bounce the client than race it.
-        ngx.log(ngx.WARN, "LEVEL_WARN||",
-            string.format("request %s sandbox %s is pausing; returning 503",
-                ngx.var.http_x_cube_request_id or "-", ins_id))
-        ngx.header["Retry-After"] = "2"
-        utils:respond_unavailable()
-    end
-
     if state == "killing" or state == "killed" then
         ngx.log(ngx.WARN, "LEVEL_WARN||",
             string.format("request %s sandbox %s is %s; returning 410",
@@ -64,20 +53,21 @@ function _M.gate(ins_id)
         utils:respond_gone()
     end
 
-    if state ~= "paused" then
+    if state ~= "paused" and state ~= "pausing" then
         -- Unknown state — log once and let the request through; resume logic
-        -- only fires for the well-known "paused" value to keep behaviour
-        -- predictable as new states are added.
+        -- only fires for pause states to keep behaviour predictable as new
+        -- states are added.
         ngx.log(ngx.WARN, "LEVEL_WARN||",
             string.format("sandbox %s has unknown state %q; passing through",
                 ins_id, tostring(state)))
         return
     end
 
-    -- state == "paused": ask CLM to resume, then continue.
+    -- state is paused or pausing: ask CLM to finish the transition and resume,
+    -- then continue the original request.
     if not ngx.var.cube_sidecar_addr or ngx.var.cube_sidecar_addr == "" then
         ngx.log(ngx.ERR, "LEVEL_ERROR||",
-            string.format("sandbox %s is paused but cube_sidecar_addr is unset; dataplane will fail",
+            string.format("sandbox %s is in pause state but cube_sidecar_addr is unset; dataplane will fail",
                 ins_id))
         return
     end

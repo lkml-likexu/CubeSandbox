@@ -303,54 +303,68 @@ func (r *Resumer) clearState(sandboxID string) {
 //     bookkeeping then runs and re-asserts
 //     state, which is the right behaviour
 //     for race-recovery).
-//   - "pausing" or "resuming":    a peer is in flight → waitForRunning
+//   - "pausing":                    wait; claim resume if pause completes
+//   - "resuming":                   wait for the peer resume to finish
 //
 // WATCH/MULTI keeps the paused→resuming transition atomic across CLM replicas.
 // CubeMaster's own lifecycle lock remains the final guard for ambiguous
 // transport failures where a timed-out operation may still complete remotely.
 func (r *Resumer) acquireResumeOwnership(ctx context.Context, sandboxID string) error {
-	cur, acquired, err := r.o.Redis.AcquireResume(ctx, sandboxID, r.o.StateLockTTL)
-	if err != nil {
-		return err
-	}
-	if acquired {
-		return nil
-	}
+	for {
+		cur, acquired, err := r.o.Redis.AcquireResume(ctx, sandboxID, r.o.StateLockTTL)
+		if err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
 
-	switch cur {
-	case "running":
-		// Sandbox is already running on Redis's view. No-op resume; the
-		// caller's success path will re-push running to the proxy in case
-		// the local dict drifted.
-		r.o.Log.Info("resume requested but sandbox already running; reconciling",
-			zap.String("sandbox_id", sandboxID))
-		return errAlreadyRunning
-	case "killing", lifecycle.StateKilled:
-		return errSandboxKilled
-	case "pausing", "resuming":
-		// Active transition by a peer → wait it out. waitForRunning
-		// returning nil means the peer transitioned to "running"; treat
-		// that as a no-op resume from our perspective so we DON'T issue
-		// our own duplicate RPC. Any other return value (peer-paused,
-		// lock expired, ctx done) propagates as an error.
-		if err := r.waitForRunning(ctx, sandboxID); err != nil {
-			return err
+		switch cur {
+		case "running":
+			// Sandbox is already running on Redis's view. No-op resume; the
+			// caller's success path will re-push running to the proxy in case
+			// the local dict drifted.
+			r.o.Log.Info("resume requested but sandbox already running; reconciling",
+				zap.String("sandbox_id", sandboxID))
+			return errAlreadyRunning
+		case "killing", lifecycle.StateKilled:
+			return errSandboxKilled
+		case "pausing":
+			// A request may arrive after the proxy learned that a pause started
+			// but before the pause completed. Wait for the pauser: running means
+			// it rolled back, while paused means this request must claim the new
+			// paused→resuming transition and wake the sandbox.
+			err := r.waitForRunning(ctx, sandboxID)
+			if errors.Is(err, errPeerLeftPaused) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			return errAlreadyRunning
+		case "resuming":
+			// A peer already owns resume. Never launch a duplicate RPC; a peer
+			// that falls back to paused leaves this request as a 503 so a fresh
+			// request can retry cleanly.
+			if err := r.waitForRunning(ctx, sandboxID); err != nil {
+				return err
+			}
+			return errAlreadyRunning
+		case "", "paused":
+			// AcquireResume only returns these values when its WATCH transaction
+			// repeatedly conflicted, which is surfaced as an error. Keep this
+			// defensive branch for alternate stateStore implementations.
+			return errors.New("resume ownership was not acquired")
+		default:
+			// Unknown state — fall back to wait, same translation rule.
+			r.o.Log.Warn("unknown state during resume ownership probe",
+				zap.String("sandbox_id", sandboxID),
+				zap.String("state", cur))
+			if err := r.waitForRunning(ctx, sandboxID); err != nil {
+				return err
+			}
+			return errAlreadyRunning
 		}
-		return errAlreadyRunning
-	case "", "paused":
-		// AcquireResume only returns these values when its WATCH transaction
-		// repeatedly conflicted, which is surfaced as an error. Keep this
-		// defensive branch for alternate stateStore implementations.
-		return errors.New("resume ownership was not acquired")
-	default:
-		// Unknown state — fall back to wait, same translation rule.
-		r.o.Log.Warn("unknown state during resume ownership probe",
-			zap.String("sandbox_id", sandboxID),
-			zap.String("state", cur))
-		if err := r.waitForRunning(ctx, sandboxID); err != nil {
-			return err
-		}
-		return errAlreadyRunning
 	}
 }
 
@@ -364,14 +378,18 @@ var errAlreadyRunning = errors.New("sandbox already running")
 // same way instead of waiting out the caller's deadline.
 var errSandboxKilled = errors.New("peer killed sandbox during resume")
 
+// errPeerLeftPaused distinguishes a pauser that completed from a resumer that
+// failed. The former is immediately claimable by the waiting request; the
+// latter remains an error so one request cannot spin through repeated resumes.
+var errPeerLeftPaused = errors.New("peer transition left sandbox paused")
+
 // waitForRunning is invoked when acquireResumeOwnership observed a peer's
 // transition lock ("pausing" or "resuming") and we must not fire our own
 // duplicate RPC. It resolves the peer's outcome when:
 //
 //   - state == "running"    → peer succeeded, request can proceed.
-//   - state == "paused"     → peer gave up; bail with an error so
-//     CubeProxy returns 503 and the next request
-//     gets a fresh resume attempt.
+//   - state == "paused"     → report a distinct paused outcome; a caller that
+//     observed pausing can claim resume, while one that observed resuming fails.
 //   - state == "killed" / "killing" → peer (sweeper) destroyed the sandbox.
 //   - key expired (!ok)     → peer crashed mid-flight; return an error so
 //     the caller re-enters Resume() cleanly.
@@ -422,7 +440,7 @@ func classifyState(state string, ok bool) (err error, done bool) {
 	case "running":
 		return nil, true
 	case "paused":
-		return errors.New("peer resume left sandbox paused"), true
+		return errPeerLeftPaused, true
 	case "killing", lifecycle.StateKilled:
 		return errSandboxKilled, true
 	default:

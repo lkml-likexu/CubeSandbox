@@ -24,6 +24,7 @@ type stateStore interface {
 	// WriteState / ClearStateNotify are the notify-emitting equivalents.
 	// See internal/resumer/iface.go for the same contract.
 	WriteState(ctx context.Context, sandboxID, state string, ttl time.Duration) error
+	WriteStateCAS(ctx context.Context, sandboxID, expected, state string, ttl time.Duration) (bool, error)
 	ClearStateNotify(ctx context.Context, sandboxID string) error
 }
 

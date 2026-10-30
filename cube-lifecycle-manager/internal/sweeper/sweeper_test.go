@@ -90,6 +90,16 @@ func (f *fakeStore) WriteState(ctx context.Context, sid, state string, ttl time.
 	return f.SetState(ctx, sid, state, ttl)
 }
 
+func (f *fakeStore) WriteStateCAS(_ context.Context, sid, expected, state string, _ time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.states[sid] != expected {
+		return false, nil
+	}
+	f.states[sid] = state
+	return true, nil
+}
+
 func (f *fakeStore) ClearStateNotify(ctx context.Context, sid string) error {
 	return f.ClearState(ctx, sid)
 }
@@ -638,8 +648,8 @@ func TestSweeper_RollsBackOnPauseFailure(t *testing.T) {
 	s := newTestSweeper(reg, store, master, push, now)
 	s.sweepOnce(context.Background())
 
-	if got := store.state("sbx-4"); got != "" {
-		t.Fatalf("redis state should be cleared after rollback, got %q", got)
+	if got := store.state("sbx-4"); got != "running" {
+		t.Fatalf("redis state should be running after rollback, got %q", got)
 	}
 	pushed := push.states("sbx-4")
 	if len(pushed) == 0 || pushed[len(pushed)-1] != "running" {
@@ -1005,8 +1015,8 @@ func TestSweeper_OtherMasterParamsErrorStillFails(t *testing.T) {
 	s := newTestSweeper(reg, store, master, push, now)
 	s.sweepOnce(context.Background())
 
-	if got := store.state("sbx-bad"); got != "" {
-		t.Fatalf("unrelated 130400 must not leave paused, got %q", got)
+	if got := store.state("sbx-bad"); got != "running" {
+		t.Fatalf("unrelated 130400 should roll back to running, got %q", got)
 	}
 	pushed := push.states("sbx-bad")
 	if len(pushed) == 0 || pushed[len(pushed)-1] != "running" {
