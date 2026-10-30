@@ -480,6 +480,59 @@ func TestResumer_WaitsWhenPeerHoldsLock(t *testing.T) {
 	}
 }
 
+func TestResumer_WaitsForPauseThenOwnsResume(t *testing.T) {
+	reg := registry.New()
+	reg.Upsert(lifecycle.SandboxLifecycleMeta{
+		SandboxID: "sbx", InstanceType: "cubebox", AutoResume: true,
+	})
+	store := newFakeStore()
+	store.states["sbx"] = "pausing"
+	master := &fakeMaster{}
+	r := newTestResumer(reg, store, master, &fakePush{})
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = store.SetState(context.Background(), "sbx", "paused", time.Minute)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.Resume(ctx, "sbx"); err != nil {
+		t.Fatalf("resume after in-flight pause should succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&master.calls); got != 1 {
+		t.Fatalf("resumer must call master.Resume exactly once, got %d", got)
+	}
+	if got := store.state("sbx"); got != "running" {
+		t.Fatalf("state should be running after successful resume, got %q", got)
+	}
+}
+
+func TestResumer_PauseRollbackBecomesNoOpResume(t *testing.T) {
+	reg := registry.New()
+	reg.Upsert(lifecycle.SandboxLifecycleMeta{
+		SandboxID: "sbx", InstanceType: "cubebox", AutoResume: true,
+	})
+	store := newFakeStore()
+	store.states["sbx"] = "pausing"
+	master := &fakeMaster{}
+	r := newTestResumer(reg, store, master, &fakePush{})
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = store.SetState(context.Background(), "sbx", "running", time.Minute)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.Resume(ctx, "sbx"); err != nil {
+		t.Fatalf("resume should accept a rolled-back pause, got %v", err)
+	}
+	if got := atomic.LoadInt32(&master.calls); got != 0 {
+		t.Fatalf("rolled-back pause must not call master.Resume, got %d", got)
+	}
+}
+
 func TestResumer_OwnsResumeWhenStateIsTerminalPaused(t *testing.T) {
 	// The race we hit in production: sweeper successfully paused the
 	// sandbox, leaving cube:v1:shared:sandbox:lifecycle:state:<id>="paused".

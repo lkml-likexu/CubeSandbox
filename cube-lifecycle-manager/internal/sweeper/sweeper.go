@@ -295,24 +295,33 @@ func (s *Sweeper) tryPause(ctx context.Context, e registry.Entry) error {
 			if !errors.As(pauseErr, &apiErr) {
 				return errors.New("cubemaster pause result unknown: " + pauseErr.Error())
 			}
-			// Real failure (definitive APIError). Roll back: clear the pausing
-			// state so a future sweep can retry, and tell CubeProxy the sandbox
-			// is back to running (it never actually paused).
-			_ = s.o.Redis.ClearStateNotify(ctx, sid)
-			_ = s.o.ProxyPush.SetState(ctx, sid, "running")
+			// Real failure (definitive APIError). Roll back pausing to running
+			// so a waiting dataplane request observes the usable sandbox. CAS
+			// prevents this failed pause from overwriting a newer transition.
+			updated, writeErr := s.o.Redis.WriteStateCAS(ctx, sid, "pausing", "running", s.o.StateLockTTL)
+			if writeErr != nil {
+				s.o.Log.Warn("write pause rollback state failed",
+					zap.String("sandbox_id", sid), zap.Error(writeErr))
+			}
+			if updated {
+				_ = s.o.ProxyPush.SetState(ctx, sid, "running")
+			}
 			return errors.New("cubemaster pause: " + pauseErr.Error())
 		}
 	}
 
+	// Publish to the proxy before waking Redis waiters. A request waiting on
+	// pausing can resume as soon as Redis becomes paused; pushing afterward could
+	// let this stale pause overwrite the resumer's newer running state.
+	if err := s.o.ProxyPush.SetState(ctx, sid, "paused"); err != nil {
+		s.o.Log.Warn("push paused state failed",
+			zap.String("sandbox_id", sid), zap.Error(err))
+	}
 	if err := s.o.Redis.WriteState(ctx, sid, "paused", s.o.StateLockTTL); err != nil {
 		s.o.Log.Warn("write paused state failed",
 			zap.String("sandbox_id", sid), zap.Error(err))
 	}
 	s.o.Registry.SetRuntimeState(sid, lifecycle.StatePaused)
-	if err := s.o.ProxyPush.SetState(ctx, sid, "paused"); err != nil {
-		s.o.Log.Warn("push paused state failed",
-			zap.String("sandbox_id", sid), zap.Error(err))
-	}
 
 	s.pauseTriggered.Add(1)
 	s.o.Log.Info("auto-paused sandbox",
