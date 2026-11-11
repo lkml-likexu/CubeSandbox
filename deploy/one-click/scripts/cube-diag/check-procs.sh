@@ -408,8 +408,9 @@ check_cube_kernel() {
   fi
 
   # Determine which kernel variant is expected based on host environment.
-  # PVM hosts boot guests with vmlinux-pvm; KVM/bare-metal use vmlinux.
-  local pvm_host=0
+  # x86 PVM uses vmlinux-pvm; arm64 PVM uses the ordinary guest kernel.
+  local pvm_host=0 host_arch
+  host_arch="${CUBE_HOST_ARCH:-$(uname -m)}"
   lsmod 2>/dev/null | grep -qE '^kvm_pvm[[:space:]]' && pvm_host=1
 
   # Always check the generic vmlinux (required for KVM/nested)
@@ -423,17 +424,27 @@ check_cube_kernel() {
   # Check PVM variant
   if [[ -f "${kernel_dir}/vmlinux-pvm" ]]; then
     local sz; sz="$(du -sh "${kernel_dir}/vmlinux-pvm" 2>/dev/null | cut -f1)"
-    if [[ "${pvm_host}" -eq 1 ]]; then
-      pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz}) — PVM host, this variant will be used"
+    if [[ "${pvm_host}" -eq 1 && "${host_arch}" != "aarch64" && "${host_arch}" != "arm64" ]]; then
+      pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz}) — x86 PVM host, this variant will be used"
+    elif [[ "${pvm_host}" -eq 1 ]]; then
+      pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz}) — unused on arm64 PVM hosts"
     else
       pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz})"
     fi
   else
     if [[ "${pvm_host}" -eq 1 ]]; then
-      fail "cube_kernel_vmlinux_pvm" \
-        "${kernel_dir}/vmlinux-pvm not found — required on PVM host for guest VM boot"
+      case "${host_arch}" in
+        aarch64|arm64)
+          pass "cube_kernel_vmlinux_pvm" \
+            "not required on arm64 PVM hosts; ordinary guest kernel is expected"
+          ;;
+        *)
+          fail "cube_kernel_vmlinux_pvm" \
+            "${kernel_dir}/vmlinux-pvm not found — required on x86 PVM host for guest VM boot"
+          ;;
+      esac
     else
-      warn "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm not found (only needed on PVM hosts)"
+      warn "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm not found (only needed on x86 PVM hosts)"
     fi
   fi
 }

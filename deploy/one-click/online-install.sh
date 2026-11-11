@@ -165,17 +165,16 @@ EOF
     exit 3
   fi
 
-  # 5a. PVM consistency check: if kvm_pvm module is loaded but
-  # CUBE_PVM_ENABLE is not 1, warn the user before downloading the
-  # large bundle.  The ordinary guest kernel will cause VM template
-  # creation failures on a PVM host.
+  # 5a. PVM consistency check: if kvm_pvm is loaded but CUBE_PVM_ENABLE is
+  # not 1, warn before downloading the large bundle. The host and runtime PVM
+  # modes must agree; arm64 still uses the ordinary guest kernel.
   if lsmod 2>/dev/null | grep -qE '^kvm_pvm[[:space:]]'; then
     if [[ "${CUBE_PVM_ENABLE:-0}" != "1" ]]; then
       echo "[online-install] ERROR: PVM host detected (kvm_pvm module loaded) but CUBE_PVM_ENABLE is not 1." >&2
       echo "[online-install]" >&2
-      echo "[online-install] The installer will use the ordinary guest kernel (vmlinux) instead" >&2
-      echo "[online-install] of the PVM-optimized guest kernel (vmlinux-pvm). This will cause VM" >&2
-      echo "[online-install] template creation failures with minimal error messages." >&2
+      echo "[online-install] CubeSandbox will not enable its matching PVM runtime mode." >&2
+      echo "[online-install] On x86 that mode selects vmlinux-pvm; arm64 keeps the ordinary" >&2
+      echo "[online-install] guest kernel. A host/runtime mode mismatch can break VM templates." >&2
       echo "[online-install]" >&2
       echo "[online-install] Solution: re-run with CUBE_PVM_ENABLE=1:" >&2
       echo "[online-install]   curl .../online-install.sh | CUBE_PVM_ENABLE=1 bash" >&2
@@ -189,7 +188,14 @@ EOF
       fi
       echo "[online-install] ONE_CLICK_SKIP_PVM_CHECK=1 -- bypassing PVM consistency check (not recommended)." >&2
     else
-      echo "[online-install] PVM host detected (kvm_pvm loaded) and CUBE_PVM_ENABLE=1 -- proceeding with PVM guest kernel." >&2
+      case "${CUBE_HOST_ARCH:-$(uname -m)}" in
+        aarch64|arm64)
+          echo "[online-install] PVM host detected and CUBE_PVM_ENABLE=1 -- proceeding with the ordinary arm64 guest kernel." >&2
+          ;;
+        *)
+          echo "[online-install] PVM host detected and CUBE_PVM_ENABLE=1 -- proceeding with PVM guest kernel." >&2
+          ;;
+      esac
     fi
   fi
 
