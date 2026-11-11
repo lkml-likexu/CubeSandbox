@@ -907,8 +907,22 @@ select_guest_kernel() {
   fi
   # 5) first-install default
   [[ -n "${target}" ]] || target="vmlinux-bm"
+  # arm64 PVM changes host KVM semantics but uses the ordinary guest kernel;
+  # its kernel image intentionally has no separate vmlinux-pvm artifact.
+  if [[ "${target}" == "vmlinux-pvm" ]]; then
+    case "${CUBE_HOST_ARCH:-$(uname -m)}" in
+      aarch64|arm64)
+        target="vmlinux-bm"
+        log "arm64 PVM host uses ordinary guest kernel: ${dir}/${target}"
+        ;;
+    esac
+  fi
   [[ -f "${dir}/${target}" ]] || fail "missing guest kernel: ${dir}/${target}"
   ln -sfn "${target}" "${dir}/vmlinux"
+  # CubeShim reads this marker beside vmlinux when capturing/restoring snapshot
+  # metadata. It must describe the selected variant, not the packaged default.
+  printf 'sha256:%s\n' "$(file_sha256_hex "${dir}/${target}")" \
+    | write_atomic "${dir}/version"
   mkdir -p "${state_dir}"
   ln -sfn "${dir}/${target}" "${state_dir}/vmlinux-active"
   log "selected guest kernel: ${dir}/vmlinux -> ${target} (vmlinux-active updated)"

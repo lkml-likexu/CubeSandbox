@@ -22,15 +22,27 @@ assert_eq() {
   printf 'ok: %s\n' "${msg}"
 }
 
+assert_fails() {
+  local msg="$1"
+  shift
+  if ("$@") >/dev/null 2>&1; then
+    printf 'FAIL: %s (command unexpectedly succeeded)\n' "${msg}" >&2
+    exit 1
+  fi
+  printf 'ok: %s\n' "${msg}"
+}
+
 setup_kernels() {
   local dir="$1"
   mkdir -p "${dir}"
-  : >"${dir}/vmlinux-bm"
-  : >"${dir}/vmlinux-pvm"
+  printf 'bm-kernel\n' >"${dir}/vmlinux-bm"
+  printf 'pvm-kernel\n' >"${dir}/vmlinux-pvm"
 }
 
 # --- select_guest_kernel priorities ---
 # effective-pvm → preserved → CUBE_PVM_ENABLE → symlink → bm
+# Baseline cases model x86; ARM-specific cases override this explicitly.
+export CUBE_HOST_ARCH=x86_64
 
 TOOLBOX_ROOT="${TMP}/tb1"
 STATE_DIR="${TMP}/st1"
@@ -44,6 +56,9 @@ assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" 
   "preserved pvm wins over post-replace bm symlink"
 assert_eq "$(basename "$(readlink "${STATE_DIR}/vmlinux-active")")" "vmlinux-pvm" \
   "vmlinux-active follows preserved pvm"
+assert_eq "$(tr -d '[:space:]' < "${TOOLBOX_ROOT}/cube-kernel-scf/version")" \
+  "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-pvm")" \
+  "kernel version marker follows selected pvm variant"
 
 TOOLBOX_ROOT="${TMP}/tb2"
 STATE_DIR="${TMP}/st2"
@@ -88,6 +103,58 @@ export CUBE_PVM_ENABLE=1
 select_guest_kernel "vmlinux-pvm"
 assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
   "effective-pvm=0 beats preserved pvm and CUBE_PVM_ENABLE=1"
+assert_eq "$(tr -d '[:space:]' < "${TOOLBOX_ROOT}/cube-kernel-scf/version")" \
+  "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm")" \
+  "kernel version marker follows selected bm variant"
+
+# arm64 images intentionally carry only the ordinary guest kernel. Host PVM
+# mode must not make component staging require a nonexistent guest variant.
+TOOLBOX_ROOT="${TMP}/tb3c"
+STATE_DIR="${TMP}/st3c"
+mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
+printf 'arm64-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
+printf '1\n' >"${STATE_DIR}/effective-pvm"
+CUBE_HOST_ARCH=arm64 select_guest_kernel ""
+assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
+  "effective-pvm=1 falls back to ordinary guest kernel when pvm artifact is absent"
+assert_eq "$(tr -d '[:space:]' < "${TOOLBOX_ROOT}/cube-kernel-scf/version")" \
+  "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm")" \
+  "arm64 fallback marker follows ordinary guest kernel"
+
+TOOLBOX_ROOT="${TMP}/tb3d"
+STATE_DIR="${TMP}/st3d"
+mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
+printf 'aarch64-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
+export CUBE_PVM_ENABLE=1
+CUBE_HOST_ARCH=aarch64 select_guest_kernel ""
+assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
+  "aarch64 alias falls back to ordinary guest kernel"
+
+TOOLBOX_ROOT="${TMP}/tb3g"
+STATE_DIR="${TMP}/st3g"
+mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
+setup_kernels "${TOOLBOX_ROOT}/cube-kernel-scf"
+export CUBE_PVM_ENABLE=1
+CUBE_HOST_ARCH=arm64 select_guest_kernel ""
+assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
+  "arm64 PVM always uses ordinary guest kernel when both variants exist"
+
+TOOLBOX_ROOT="${TMP}/tb3e"
+STATE_DIR="${TMP}/st3e"
+mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
+printf 'x86-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
+export CUBE_PVM_ENABLE=1
+assert_fails "x86 PVM still requires vmlinux-pvm" \
+  env CUBE_HOST_ARCH=x86_64 TOOLBOX_ROOT="${TOOLBOX_ROOT}" STATE_DIR="${STATE_DIR}" \
+  bash -c "source <(sed '/^main \"\$@\"/d' '${ENTRY}'); select_guest_kernel ''"
+
+TOOLBOX_ROOT="${TMP}/tb3f"
+STATE_DIR="${TMP}/st3f"
+mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
+export CUBE_PVM_ENABLE=1
+assert_fails "arm64 fallback still requires an ordinary guest kernel" \
+  env CUBE_HOST_ARCH=arm64 TOOLBOX_ROOT="${TOOLBOX_ROOT}" STATE_DIR="${STATE_DIR}" \
+  bash -c "source <(sed '/^main \"\$@\"/d' '${ENTRY}'); select_guest_kernel ''"
 
 # --- preserve_guest_kernel_selection ---
 TOOLBOX_ROOT="${TMP}/tb4"
