@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/tencentcloud/CubeSandbox/Cubelet/pkg/constants"
@@ -63,8 +64,109 @@ func TestResolveSnapshotRuntimeArtifactsFallsBackToSnapshotConfig(t *testing.T) 
 	if kernelPath != "/opt/cube/kernel/image.vm" {
 		t.Fatalf("kernelPath=%q, want %q", kernelPath, "/opt/cube/kernel/image.vm")
 	}
-	if imagePath != "/opt/cube/app-image.ext4" {
-		t.Fatalf("imagePath=%q, want %q", imagePath, "/opt/cube/app-image.ext4")
+	if imagePath != "/opt/cube/guest-image.ext4" {
+		t.Fatalf("imagePath=%q, want %q", imagePath, "/opt/cube/guest-image.ext4")
+	}
+}
+
+func TestResolveSnapshotRuntimeArtifactsRejectsCatalogKernelDrift(t *testing.T) {
+	t.Parallel()
+
+	snapshotPath := t.TempDir()
+	configDir := filepath.Join(snapshotPath, "snapshot")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	capturedKernelDir := filepath.Join(t.TempDir(), "captured-kernel")
+	if err := os.MkdirAll(capturedKernelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	capturedKernel := filepath.Join(capturedKernelDir, "vmlinux")
+	if err := os.WriteFile(capturedKernel, []byte("captured"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(capturedKernelDir, "version"), []byte("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configJSON := `{"payload":{"kernel":` + strconv.Quote(capturedKernel) + `}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotPath, "metadata.json"), []byte(`{"kernel_version":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	catalogKernelDir := filepath.Join(t.TempDir(), "catalog-kernel")
+	if err := os.MkdirAll(catalogKernelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	catalogKernel := filepath.Join(catalogKernelDir, "vmlinux")
+	if err := os.WriteFile(catalogKernel, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(catalogKernelDir, "version"), []byte("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	localTemplate := &templatetypes.LocalRunTemplate{Componts: map[string]templatetypes.LocalComponent{
+		templatetypes.CubeComponentCubeKernel: {Component: templatetypes.MachineComponent{Path: catalogKernel}},
+		templatetypes.CubeComponentCubeImage:  {Component: templatetypes.MachineComponent{Path: "/template/image.ext4"}},
+	}}
+
+	versionedBase := t.TempDir()
+	inventoryDir := filepath.Join(versionedBase, string(templatetypes.CubeComponentCubeKernel), "sha256-aaaaaaaaaaaa")
+	if err := os.MkdirAll(inventoryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inventoryKernel := filepath.Join(inventoryDir, templatetypes.RelativePathCubeKernel)
+	if err := os.WriteFile(inventoryKernel, []byte("captured"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inventoryDir, "version"), []byte("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &cubeboxInstancePlugin{versionedBaseDir: versionedBase}
+	kernelPath, imagePath, err := p.resolveSnapshotRuntimeArtifacts(snapshotPath, localTemplate)
+	if err != nil {
+		t.Fatalf("resolveSnapshotRuntimeArtifacts error=%v", err)
+	}
+	if kernelPath != inventoryKernel {
+		t.Fatalf("kernelPath=%q, want captured-version inventory kernel %q", kernelPath, inventoryKernel)
+	}
+	if imagePath != "/template/image.ext4" {
+		t.Fatalf("imagePath=%q, want template image", imagePath)
+	}
+}
+
+func TestResolveSnapshotRuntimeArtifactsUsesExplicitOSImagePmem(t *testing.T) {
+	t.Parallel()
+
+	snapshotPath := t.TempDir()
+	configDir := filepath.Join(snapshotPath, "snapshot")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configJSON := `{
+		"payload":{"kernel":"/opt/cube/kernel/vmlinux"},
+		"pmem":[
+			{"id":"pmem-cubebox-image-0","file":"/opt/cube/app.ext4"},
+			{"id":"pmem-cube-os-image","file":"/opt/cube/guest.ext4"},
+			{"id":"_pmem0","file":"/opt/cube/legacy-guest.ext4"}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &cubeboxInstancePlugin{}
+	_, imagePath, err := p.resolveSnapshotRuntimeArtifacts(snapshotPath, nil)
+	if err != nil {
+		t.Fatalf("resolveSnapshotRuntimeArtifacts error=%v", err)
+	}
+	if imagePath != "/opt/cube/guest.ext4" {
+		t.Fatalf("imagePath=%q, want explicit guest OS image", imagePath)
 	}
 }
 
