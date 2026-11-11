@@ -64,7 +64,7 @@ export ONE_CLICK_CUBE_KERNEL_PVM_VMLINUX=/abs/path/to/vmlinux-pvm
 - `KERNEL_TAG` / `PVM_KERNEL_TAG` **不作为**库存目录名；`release-manifest` 的 `kernel.version` / `pvm_version` 同样记录内容短哈希
 - Ensure 从 Master identity 中的 digest 映射到上述短 key
 
-运行时仍然使用 `cube-kernel-scf/vmlinux`。包内保留 `vmlinux-bm`，`vmlinux` 为软链：默认指向 `vmlinux-bm`；目标机安装时设 `CUBE_PVM_ENABLE=1` 则指向 `vmlinux-pvm`。`CUBE_PVM_ENABLE` 是安装器开关：升级时 `CUBE_PVM_ENABLE=0|1 ./install.sh` 或包内 `.env` 出现该 key 即为显式设置（`0` 默认值同样生效），整份 `cp env.example .env` 会把它重置为 `0`。
+运行时仍然使用 `cube-kernel-scf/vmlinux`。包内保留 `vmlinux-bm`，`vmlinux` 为软链，默认指向 `vmlinux-bm`。设置 `CUBE_PVM_ENABLE=1` 时，x86_64 选择 `vmlinux-pvm`；arm64 PVM 仍选择 `vmlinux-bm`，因为 PVM 改变的是宿主机 KVM 语义，不需要单独的 ARM guest kernel。`CUBE_PVM_ENABLE` 是安装器开关：升级时 `CUBE_PVM_ENABLE=0|1 ./install.sh` 或包内 `.env` 出现该 key 即为显式设置（`0` 默认值同样生效），整份 `cp env.example .env` 会把它重置为 `0`。
 
 guest image 不再依赖本地 zip。默认在构建 one-click 发布包时基于 `deploy/guest-image/Dockerfile` 本地生成。常用覆盖参数如下：
 
@@ -619,7 +619,7 @@ sudo yum install -y python3 libaio libnuma libuuid
 
 ## 已知限制
 
-- 如果 `assets/kernel-artifacts/` 下缺少 `vmlinux`，`build-vm-assets.sh` 和 `build-release-bundle.sh` 会立即失败；`vmlinux-pvm` 在构建时是可选制品，但安装时若设置 `CUBE_PVM_ENABLE=1`，发布包内必须包含它；发布包里的 `cube-kernel-scf.zip` 会在打包阶段自动生成。
+- 如果 `assets/kernel-artifacts/` 下缺少 `vmlinux`，`build-vm-assets.sh` 和 `build-release-bundle.sh` 会立即失败；`vmlinux-pvm` 在构建时是可选制品。x86_64 安装设置 `CUBE_PVM_ENABLE=1` 时发布包必须包含它，arm64 PVM 则会按设计回退到 `vmlinux-bm`；发布包里的 `cube-kernel-scf.zip` 会在打包阶段自动生成。
 - 如果 `deploy/guest-image/Dockerfile` 构建失败，或构建机的 `mkfs.ext4` 不支持 `-d`，guest image 生成会立即失败。
 - `cube-snapshot/spec.json` 在当前 one-click 首版中不是强制产物；缺失时相关插件会退化为告警，而不是阻塞基础启动。
 - 默认的 `NetworkManager + dnsmasq` 回退路径依赖 NetworkManager 拉起 `dnsmasq` 子进程。在 NetworkManager 会初始化插件但从不真正拉起它的目标机上（例如通过 `ifcfg` + `assume` 管理的 bond 网卡），可设置 `CUBE_PROXY_DNSMASQ_MODE=standalone`，让 DNS 脚本自己拉起并管理 `dnsmasq`。standalone 模式不需要可重启的 `NetworkManager`，但在完全没有任何解析器管理器的目标机上，你必须确保之后没有其它组件覆盖 `/etc/resolv.conf`。该模式下 `dnsmasq` 作为一个不受 systemd 托管的裸子进程运行，若之后崩溃不会自动重启；可通过 `systemctl restart cube-sandbox-dns` 恢复。
