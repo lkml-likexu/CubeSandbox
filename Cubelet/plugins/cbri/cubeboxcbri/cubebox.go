@@ -552,6 +552,20 @@ func (e *cubeboxInstancePlugin) resolveSnapshotRuntimeArtifacts(
 		kernelPath = resolveTemplateComponentPath(localTemplate, templatetypes.CubeComponentCubeKernel)
 		imagePath = resolveTemplateComponentPath(localTemplate, templatetypes.CubeComponentCubeImage)
 	}
+
+	// The recovered run template may have been hydrated from catalog component
+	// versions. Do not trust those paths when the catalog drifted from the
+	// artifacts the VM actually used: metadata.json is stamped by the shim from
+	// the capture-time paths and is authoritative for memory restore.
+	metadata, metadataErr := readSnapshotMetadata(snapshotPath)
+	if metadataErr == nil {
+		if !snapshotArtifactVersionMatches(kernelPath, metadata.KernelVersion) {
+			kernelPath = e.snapshotVersionedArtifactPath(templatetypes.CubeComponentCubeKernel, metadata.KernelVersion)
+		}
+		if !snapshotArtifactVersionMatches(imagePath, metadata.ImageVersion) {
+			imagePath = e.snapshotVersionedArtifactPath(templatetypes.CubeComponentCubeImage, metadata.ImageVersion)
+		}
+	}
 	if kernelPath != "" && imagePath != "" {
 		return kernelPath, imagePath, nil
 	}
@@ -574,12 +588,7 @@ func (e *cubeboxInstancePlugin) resolveSnapshotRuntimeArtifacts(
 		kernelPath = strings.TrimSpace(cfg.Payload.Kernel)
 	}
 	if imagePath == "" {
-		for _, p := range cfg.Pmem {
-			if strings.HasPrefix(p.ID, constants.AnnotationPmemCubeBoxImageIDPrefix) && strings.TrimSpace(p.File) != "" {
-				imagePath = strings.TrimSpace(p.File)
-				break
-			}
-		}
+		imagePath = snapshotOSImagePath(&cfg)
 	}
 
 	if kernelPath == "" {
@@ -588,7 +597,59 @@ func (e *cubeboxInstancePlugin) resolveSnapshotRuntimeArtifacts(
 	if imagePath == "" {
 		return "", "", fmt.Errorf("template have no os image component")
 	}
+	if metadataErr == nil {
+		if !snapshotArtifactVersionMatches(kernelPath, metadata.KernelVersion) {
+			return "", "", fmt.Errorf("snapshot kernel artifact version %q is not available", metadata.KernelVersion)
+		}
+		if !snapshotArtifactVersionMatches(imagePath, metadata.ImageVersion) {
+			return "", "", fmt.Errorf("snapshot os image artifact version %q is not available", metadata.ImageVersion)
+		}
+	}
 	return kernelPath, imagePath, nil
+}
+
+func snapshotArtifactVersionMatches(path, version string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	want := templatetypes.InventoryVersionKey(strings.TrimSpace(version))
+	if want == "" {
+		return true
+	}
+	return templatetypes.InventoryVersionKey(componentVersionFromPath(path)) == want
+}
+
+func (e *cubeboxInstancePlugin) snapshotVersionedArtifactPath(
+	component templatetypes.CubeComponent, version string,
+) string {
+	if templatetypes.InventoryVersionKey(version) == "" {
+		return ""
+	}
+	baseDir := e.versionedBaseDir
+	if baseDir == "" {
+		baseDir = templatetypes.DefaultVersionedBaseDir
+	}
+	path := templatetypes.VersionedLocalPath(
+		baseDir, string(component), version, templatetypes.DefaultRelativePath(component),
+	)
+	if regularFileExists(path) && snapshotArtifactVersionMatches(path, version) {
+		return path
+	}
+	return ""
+}
+
+func snapshotOSImagePath(cfg *snapshotConfig) string {
+	// Current snapshots identify the guest OS pmem explicitly. Older snapshots
+	// used the first implicit pmem id. Application-image pmems are not the guest
+	// OS image and must never be used for the VM os-image annotation.
+	for _, id := range []string{"pmem-cube-os-image", "_pmem0"} {
+		for _, p := range cfg.Pmem {
+			if strings.TrimSpace(p.ID) == id && strings.TrimSpace(p.File) != "" {
+				return strings.TrimSpace(p.File)
+			}
+		}
+	}
+	return ""
 }
 
 func resolveTemplateComponentPath(localTemplate *templatetypes.LocalRunTemplate, name templatetypes.CubeComponent) string {
