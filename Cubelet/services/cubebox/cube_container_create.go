@@ -309,6 +309,10 @@ func (l *local) createContainers(ctx context.Context, flowOpts *workflow.CreateC
 	if err := EnsureCubeBoxComponents(ctx, sandBox); err != nil {
 		return err
 	}
+	// Component annotations can create and resolve the template after the
+	// CubeBox is initialized. Keep the workflow context on the same resolved
+	// template so runtime plugins boot the component versions we persist.
+	flowOpts.LocalRunTemplate = sandBox.LocalRunTemplate
 
 	if flowOpts.UserData != nil && flowOpts.UserData.K8sPod != nil {
 		sandBox.GetOrCreatePodConfig().SetK8sPod(ctx, flowOpts.UserData.K8sPod)

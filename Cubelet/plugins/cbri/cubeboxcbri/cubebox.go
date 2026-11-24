@@ -161,15 +161,19 @@ func (e *cubeboxInstancePlugin) CreateSandbox(ctx context.Context, flowOpts *wor
 	if appImageID == "" {
 		kernelPath = e.artifactPaths.SharedKernelPath
 	} else {
-		if flowOpts.IsCreateSnapshot() {
-			if err := e.syncLatestKernelForImage(ctx, appImageID); err != nil {
-				return nil, err
-			}
-		}
 		kernelPath = e.getKernelFilePath(appImageID)
 		rootfs := filepath.Join(e.artifactPaths.ImageDir(e.config.instanceType), appImageID)
 		specOpts = append(specOpts, oci.WithRootFSPath(rootfs))
 		logEntry = logEntry.WithField("rootfs", rootfs)
+	}
+	if flowOpts.IsCreateSnapshot() {
+		if pinnedKernel := resolveTemplateComponentPath(flowOpts.LocalRunTemplate, templatetypes.CubeComponentCubeKernel); pinnedKernel != "" {
+			kernelPath = pinnedKernel
+		} else if appImageID != "" {
+			if err := e.syncLatestKernelForImage(ctx, appImageID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	annotations[constants.AnnotationsVMKernelPath] = kernelPath
 	annotations[constants.AnnotationsProduct] = e.config.instanceType

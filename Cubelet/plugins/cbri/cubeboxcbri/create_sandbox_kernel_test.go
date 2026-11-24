@@ -27,34 +27,52 @@ import (
 	cubeimages "github.com/tencentcloud/CubeSandbox/pkgs/proto/services/images/v1"
 )
 
-func TestCreateSandboxCreateSnapshotRefreshesArtifactKernel(t *testing.T) {
+func TestCreateSandboxCreateSnapshotPrefersPinnedKernel(t *testing.T) {
 	t.Parallel()
 
 	plugin := newTestCubeboxPlugin(t)
-	artifactID := "artifact-1"
+	artifactID := "artifact-pinned"
+	sharedKernelPath := plugin.artifactPaths.SharedKernelPath
+	targetKernelPath := plugin.getKernelFilePath(artifactID)
+	pinnedKernelPath := filepath.Join(t.TempDir(), "cube-kernel-scf", "pinned", "vmlinux")
+	oldKernel := bytes.Repeat([]byte("o"), 2048)
+	writeTestFile(t, sharedKernelPath, bytes.Repeat([]byte("s"), 4096))
+	writeTestFile(t, targetKernelPath, oldKernel)
+	writeKernelVersion(t, targetKernelPath, oldKernel)
+	writeTestFile(t, pinnedKernelPath, bytes.Repeat([]byte("p"), 3072))
+
+	flowOpts := newSnapshotCreateContext(artifactID)
+	flowOpts.LocalRunTemplate = &templatetypes.LocalRunTemplate{
+		Componts: map[string]templatetypes.LocalComponent{
+			templatetypes.CubeComponentCubeKernel: {
+				Component: templatetypes.MachineComponent{Path: pinnedKernelPath},
+			},
+		},
+	}
+	ctx := constants.WithAppImageID(context.Background(), artifactID)
+
+	specOpts, err := plugin.CreateSandbox(ctx, flowOpts)
+	require.NoError(t, err)
+
+	gotKernel, err := os.ReadFile(targetKernelPath)
+	require.NoError(t, err)
+	require.Equal(t, oldKernel, gotKernel)
+
+	spec := applySpecOpts(t, ctx, specOpts)
+	require.Equal(t, pinnedKernelPath, spec.Annotations[constants.AnnotationsVMKernelPath])
+}
+
+func TestCreateSandboxCreateSnapshotRefreshesArtifactKernelWithoutPin(t *testing.T) {
+	t.Parallel()
+
+	plugin := newTestCubeboxPlugin(t)
+	artifactID := "artifact-fallback"
 	sharedKernelPath := plugin.artifactPaths.SharedKernelPath
 	targetKernelPath := plugin.getKernelFilePath(artifactID)
 	writeTestFile(t, sharedKernelPath, bytes.Repeat([]byte("s"), 4096))
 	writeTestFile(t, targetKernelPath, bytes.Repeat([]byte("o"), 2048))
 
-	flowOpts := &workflow.CreateContext{
-		ReqInfo: &cubebox.RunCubeSandboxRequest{
-			InstanceType: cubebox.InstanceType_cubebox.String(),
-			Annotations: map[string]string{
-				constants.MasterAnnotationsAppSnapshotCreate:    "true",
-				constants.MasterAnnotationAppSnapshotTemplateID: "tpl-1",
-			},
-			Containers: []*cubebox.ContainerConfig{
-				{
-					Resources: &cubebox.Resource{Cpu: "2000m", Mem: "2000Mi"},
-					Image: &cubeimages.ImageSpec{
-						Image:        artifactID,
-						StorageMedia: cubeimages.ImageStorageMediaType_ext4.String(),
-					},
-				},
-			},
-		},
-	}
+	flowOpts := newSnapshotCreateContext(artifactID)
 	ctx := constants.WithAppImageID(context.Background(), artifactID)
 
 	specOpts, err := plugin.CreateSandbox(ctx, flowOpts)
@@ -67,6 +85,52 @@ func TestCreateSandboxCreateSnapshotRefreshesArtifactKernel(t *testing.T) {
 
 	spec := applySpecOpts(t, ctx, specOpts)
 	require.Equal(t, targetKernelPath, spec.Annotations[constants.AnnotationsVMKernelPath])
+}
+
+func TestCreateSandboxCreateSnapshotWithoutArtifactPrefersPinnedKernel(t *testing.T) {
+	t.Parallel()
+
+	plugin := newTestCubeboxPlugin(t)
+	pinnedKernelPath := filepath.Join(t.TempDir(), "cube-kernel-scf", "pinned", "vmlinux")
+	flowOpts := newSnapshotCreateContext("")
+	flowOpts.LocalRunTemplate = &templatetypes.LocalRunTemplate{
+		Componts: map[string]templatetypes.LocalComponent{
+			templatetypes.CubeComponentCubeKernel: {
+				Component: templatetypes.MachineComponent{Path: pinnedKernelPath},
+			},
+		},
+	}
+
+	specOpts, err := plugin.CreateSandbox(context.Background(), flowOpts)
+	require.NoError(t, err)
+
+	spec := applySpecOpts(t, context.Background(), specOpts)
+	require.Equal(t, pinnedKernelPath, spec.Annotations[constants.AnnotationsVMKernelPath])
+}
+
+func newSnapshotCreateContext(artifactID string) *workflow.CreateContext {
+	var containers []*cubebox.ContainerConfig
+	if artifactID != "" {
+		containers = []*cubebox.ContainerConfig{
+			{
+				Resources: &cubebox.Resource{Cpu: "2000m", Mem: "2000Mi"},
+				Image: &cubeimages.ImageSpec{
+					Image:        artifactID,
+					StorageMedia: cubeimages.ImageStorageMediaType_ext4.String(),
+				},
+			},
+		}
+	}
+	return &workflow.CreateContext{
+		ReqInfo: &cubebox.RunCubeSandboxRequest{
+			InstanceType: cubebox.InstanceType_cubebox.String(),
+			Annotations: map[string]string{
+				constants.MasterAnnotationsAppSnapshotCreate:    "true",
+				constants.MasterAnnotationAppSnapshotTemplateID: "tpl-1",
+			},
+			Containers: containers,
+		},
+	}
 }
 
 func TestCreateSandboxRestoreDoesNotRefreshArtifactKernel(t *testing.T) {
