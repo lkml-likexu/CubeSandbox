@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 
+import httpx
 from cubesandbox import Sandbox
 from env import TEMPLATE_ID
 
@@ -83,6 +84,21 @@ def percentile(data: list, p: float) -> float:
     return s[max(0, min(k, len(s) - 1))]
 
 
+def run_code_when_ready(sb: Sandbox, code: str, timeout: float = 30.0):
+    """Run code after tolerating the guest gateway's brief post-create startup gap."""
+    deadline = time.monotonic() + timeout
+    delay = 0.1
+    while True:
+        try:
+            return sb.run_code(code)
+        except httpx.ConnectError as exc:
+            remaining = deadline - time.monotonic()
+            if "connection refused" not in str(exc).lower() or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 1.0)
+
+
 def run_round(size_mb: int) -> dict:
     snap_id = None
     sb = None
@@ -92,7 +108,7 @@ def run_round(size_mb: int) -> dict:
         # Keep incompressible anonymous memory alive in the notebook kernel
         # through snapshot creation. Fill in chunks so generating the data does
         # not temporarily allocate a second size_mb buffer.
-        execution = sb.run_code(f"""
+        execution = run_code_when_ready(sb, f"""
 import hashlib
 import os
 
