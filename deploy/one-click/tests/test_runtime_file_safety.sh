@@ -66,10 +66,12 @@ run_cube_proxy_postcheck_case() {
   local grpc_listen_port="${4:-9090}"
   local grpc_expected_port="${5:-9090}"
   local admin_port="${6:-8082}"
+  local expected_admin_url="${7:-http://127.0.0.1:${admin_port}}"
   local case_dir="${TMP_DIR}/cube-proxy-postcheck-${expected_port}-${grpc_expected_port}-${admin_port}"
   local env_file="${case_dir}/.one-click.env"
   local stub_dir="${case_dir}/bin"
   local ss_log="${case_dir}/ss.args"
+  local curl_log="${case_dir}/curl.args"
 
   mkdir -p "${stub_dir}"
   printf '%s\n' "${env_content}" > "${env_file}"
@@ -88,11 +90,18 @@ if [[ "${port}" == "${SS_HTTP_PORT}" || "${port}" == "${SS_GRPC_PORT}" || "${por
   printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:*\n' "${port}"
 fi
 SH
-  chmod +x "${stub_dir}/ss"
+  cat > "${stub_dir}/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'CALL' >> "${CURL_ARGS_LOG}"
+printf '<%s>\n' "$@" >> "${CURL_ARGS_LOG}"
+exit 0
+SH
+  chmod +x "${stub_dir}/ss" "${stub_dir}/curl"
 
   PATH="${stub_dir}:${PATH}" \
     ONE_CLICK_RUNTIME_ENV_FILE="${env_file}" \
     SS_ARGS_LOG="${ss_log}" \
+    CURL_ARGS_LOG="${curl_log}" \
     SS_HTTP_PORT="${listen_port}" \
     SS_GRPC_PORT="${grpc_listen_port}" \
     SS_ADMIN_PORT="${admin_port}" \
@@ -100,7 +109,8 @@ SH
 
   assert_contains "${ss_log}" "sport = :${expected_port}"
   assert_contains "${ss_log}" "sport = :${grpc_expected_port}"
-  assert_contains "${ss_log}" "sport = :${admin_port}"
+  assert_not_contains "${ss_log}" "sport = :${admin_port}"
+  assert_contains "${curl_log}" "<${expected_admin_url%/}/admin/healthz>"
 }
 
 test_render_template_replaces_empty_directory() {
@@ -908,6 +918,41 @@ CUBE_PROXY_POSTCHECK_DELAY=0" \
     50051
 }
 
+test_cube_proxy_postcheck_probes_advertised_admin_url() {
+  run_cube_proxy_postcheck_case \
+    "CUBE_PROXY_ADMIN_PORT=18082
+CUBE_PROXY_ADMIN_URL=http://172.16.100.218:18082
+CUBE_PROXY_POSTCHECK_RETRIES=1
+CUBE_PROXY_POSTCHECK_DELAY=0" \
+    80 \
+    80 \
+    9090 \
+    9090 \
+    18082 \
+    http://172.16.100.218:18082
+}
+
+test_cube_proxy_postcheck_preserves_admin_token_argument() {
+  local token='abc token * --output /tmp/not-an-option'
+  local curl_log
+
+  run_cube_proxy_postcheck_case \
+    "CUBE_ADMIN_TOKEN='${token}'
+CUBE_PROXY_ADMIN_PORT=18083
+CUBE_PROXY_POSTCHECK_RETRIES=1
+CUBE_PROXY_POSTCHECK_DELAY=0" \
+    80 \
+    80 \
+    9090 \
+    9090 \
+    18083
+
+  curl_log="${TMP_DIR}/cube-proxy-postcheck-80-9090-18083/curl.args"
+  assert_contains "${curl_log}" "<-H>"
+  assert_contains "${curl_log}" "<X-Cube-Admin-Token: ${token}>"
+  assert_not_contains "${curl_log}" "<--output>"
+}
+
 test_cube_proxy_postcheck_fails_when_grpc_port_not_ready() {
   local case_dir="${TMP_DIR}/cube-proxy-postcheck-grpc-fail"
   local env_file="${case_dir}/.one-click.env"
@@ -1229,6 +1274,8 @@ test_cube_proxy_postcheck_ignores_https_port
 test_cube_proxy_postcheck_ignores_deprecated_host_port
 test_cube_proxy_postcheck_prefers_http_over_deprecated_host_port
 test_cube_proxy_postcheck_follows_grpc_port
+test_cube_proxy_postcheck_probes_advertised_admin_url
+test_cube_proxy_postcheck_preserves_admin_token_argument
 test_cube_proxy_postcheck_fails_when_grpc_port_not_ready
 test_postcheck_skips_when_external_host_set
 test_webui_postcheck_skips_when_disabled

@@ -407,6 +407,25 @@ wait_for_http() {
   return 1
 }
 
+wait_for_http_header() {
+  local url="$1"
+  local retries="${2:-30}"
+  local delay="${3:-2}"
+  local header_name="$4"
+  local header_value="$5"
+  local i
+  local last_err=""
+
+  for ((i = 1; i <= retries; i++)); do
+    if last_err="$(curl -fsS -H "${header_name}: ${header_value}" "${url}" 2>&1 >/dev/null)"; then
+      return 0
+    fi
+    sleep "${delay}"
+  done
+  log "ERROR wait_for_http_header timeout: url=${url} waited=$((retries * delay))s last_curl_error=${last_err:-<empty>}"
+  return 1
+}
+
 wait_for_tcp_port() {
   local port="$1"
   local retries="${2:-30}"

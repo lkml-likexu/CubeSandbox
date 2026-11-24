@@ -13,6 +13,7 @@ source "${SCRIPT_DIR}/common.sh"
 source "${SCRIPT_DIR}/compose-lib.sh"
 
 require_root
+require_cmd curl
 require_cmd docker
 require_cmd sed
 require_cmd ss
@@ -313,6 +314,11 @@ http_ready=0
 https_ready=0
 grpc_ready=0
 admin_ready=0
+admin_health_url="${CUBE_PROXY_ADMIN_URL%/}/admin/healthz"
+admin_curl_args=(-fsS)
+if [[ -n "${CUBE_ADMIN_TOKEN}" ]]; then
+  admin_curl_args+=(-H "X-Cube-Admin-Token: ${CUBE_ADMIN_TOKEN}")
+fi
 for _ in {1..30}; do
   if [[ "${http_ready}" == "0" ]] && \
      command_output_contains_fixed_string "LISTEN" ss -lnt "( sport = :${CUBE_PROXY_HTTP_PORT} )"; then
@@ -326,8 +332,11 @@ for _ in {1..30}; do
      command_output_contains_fixed_string "LISTEN" ss -lnt "( sport = :${CUBE_PROXY_GRPC_PORT} )"; then
     grpc_ready=1
   fi
+  # Probe the exact URL advertised to CubeMaster/CLM. A port-only ss check also
+  # accepts a loopback-only listener, which leaves the node-IP admin endpoint
+  # returning ECONNREFUSED while deployment incorrectly reports success.
   if [[ "${admin_ready}" == "0" ]] && \
-     command_output_contains_fixed_string "LISTEN" ss -lnt "( sport = :${CUBE_PROXY_ADMIN_PORT} )"; then
+     curl "${admin_curl_args[@]}" "${admin_health_url}" >/dev/null 2>&1; then
     admin_ready=1
   fi
   if [[ "${http_ready}" == "1" && "${https_ready}" == "1" && "${grpc_ready}" == "1" && "${admin_ready}" == "1" ]]; then
@@ -341,7 +350,7 @@ readiness_failures=()
 [[ "${http_ready}"  == "1" ]] || readiness_failures+=("HTTP port ${CUBE_PROXY_HTTP_PORT} (override CUBE_PROXY_HTTP_PORT)")
 [[ "${https_ready}" == "1" ]] || readiness_failures+=("HTTPS port ${CUBE_PROXY_HTTPS_PORT} (override CUBE_PROXY_HTTPS_PORT)")
 [[ "${grpc_ready}"  == "1" ]] || readiness_failures+=("gRPC port ${CUBE_PROXY_GRPC_PORT} (override CUBE_PROXY_GRPC_PORT)")
-[[ "${admin_ready}" == "1" ]] || readiness_failures+=("admin port ${CUBE_PROXY_ADMIN_PORT} (override CUBE_PROXY_ADMIN_PORT)")
+[[ "${admin_ready}" == "1" ]] || readiness_failures+=("advertised admin URL ${admin_health_url} (check CUBE_PROXY_ADMIN_LISTEN/CUBE_PROXY_ADMIN_URL/CUBE_PROXY_ADMIN_PORT)")
 if [[ ${#readiness_failures[@]} -gt 0 ]]; then
-  die "cube proxy did not become ready on: ${readiness_failures[*]} -- check 'docker logs ${CUBE_PROXY_CONTAINER_NAME}' for a bind() failure (the listen directives bind at nginx master startup, so an already-in-use port crash-loops the container)."
+  die "cube proxy did not become ready on: ${readiness_failures[*]} -- check 'docker logs ${CUBE_PROXY_CONTAINER_NAME}' and the rendered ${NGINX_CONF} for a bind or advertised-address mismatch."
 fi
