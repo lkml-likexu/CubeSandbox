@@ -1019,8 +1019,8 @@ check_hardware_preflight() {
 }
 
 # Check PVM host consistency: if the kvm_pvm kernel module is loaded,
-# CUBE_PVM_ENABLE must be set to 1. On x86 this selects vmlinux-pvm; on arm64
-# it enables PVM host semantics while retaining the ordinary guest kernel.
+# CUBE_PVM_ENABLE must be set to 1. Enabling PVM always selects vmlinux-pvm,
+# independently of the host architecture.
 #
 # This check runs after check_hardware_preflight (which validates /dev/kvm)
 # and before any filesystem or cgroup checks, so the user gets a clear
@@ -1038,14 +1038,7 @@ check_pvm_consistency_preflight() {
 
   # PVM host detected, CUBE_PVM_ENABLE is already set correctly.
   if [[ "${CUBE_PVM_ENABLE}" == "1" ]]; then
-    case "${CUBE_HOST_ARCH:-$(uname -m)}" in
-      aarch64|arm64)
-        log "PVM host detected (kvm_pvm loaded) and CUBE_PVM_ENABLE=1 — proceeding with the ordinary arm64 guest kernel."
-        ;;
-      *)
-        log "PVM host detected (kvm_pvm loaded) and CUBE_PVM_ENABLE=1 — proceeding with PVM guest kernel."
-        ;;
-    esac
+    log "PVM host detected (kvm_pvm loaded) and CUBE_PVM_ENABLE=1 — proceeding with PVM guest kernel."
     return 0
   fi
 
@@ -1063,8 +1056,8 @@ check_pvm_consistency_preflight() {
 ║  machine is running as a PVM host.                               ║
 ║                                                                  ║
 ║  However, CUBE_PVM_ENABLE is not set to 1, so CubeSandbox will   ║
-║  not enable its matching PVM runtime mode. On x86 that mode      ║
-║  selects vmlinux-pvm; arm64 keeps the ordinary guest kernel.     ║
+║  not enable its matching PVM runtime mode or select              ║
+║  vmlinux-pvm as the guest kernel.                                ║
 ║                                                                  ║
 ║  [!!] VM template creation can fail with minimal error messages  ║
 ║       when the host and runtime PVM modes disagree.              ║
@@ -1262,18 +1255,9 @@ check_install_preflight() {
 select_installed_kernel_vmlinux() {
   local kernel_dir="${INSTALL_PREFIX}/cube-kernel-scf"
   local target="vmlinux-bm"
-  local arm_pvm_bm=0
 
   if [[ "${CUBE_PVM_ENABLE}" == "1" ]]; then
     target="vmlinux-pvm"
-  fi
-  if [[ "${target}" == "vmlinux-pvm" ]]; then
-    case "${CUBE_HOST_ARCH:-$(uname -m)}" in
-      aarch64|arm64)
-        target="vmlinux-bm"
-        arm_pvm_bm=1
-        ;;
-    esac
   fi
 
   ensure_file "${kernel_dir}/${target}"
@@ -1286,8 +1270,6 @@ select_installed_kernel_vmlinux() {
     > "${kernel_dir}/version"
   if [[ "${target}" == "vmlinux-pvm" ]]; then
     log "CUBE_PVM_ENABLE=1, selected PVM guest kernel: ${kernel_dir}/vmlinux -> ${target}"
-  elif [[ "${arm_pvm_bm}" -eq 1 ]]; then
-    log "CUBE_PVM_ENABLE=1, arm64 PVM host uses ordinary guest kernel: ${kernel_dir}/vmlinux -> ${target}"
   else
     log "selected ordinary guest kernel: ${kernel_dir}/vmlinux -> ${target}"
   fi

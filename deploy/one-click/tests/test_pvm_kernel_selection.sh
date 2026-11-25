@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests architecture-aware PVM guest-kernel selection and diagnostics.
+# Tests architecture-independent PVM guest-kernel selection and diagnostics.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,15 +59,14 @@ assert_eq "$(tr -d '[:space:]' <"${TMP_DIR}/x86-pvm/cube-kernel-scf/version")" \
 assert_fails "x86 PVM rejects BM-only package" run_selection x86-bm-only x86_64 1 1 0
 
 for arch in arm64 aarch64; do
-  run_selection "${arch}-pvm" "${arch}" 1 1 0
-  assert_eq "$(readlink "${TMP_DIR}/${arch}-pvm/cube-kernel-scf/vmlinux")" "vmlinux-bm" \
-    "${arch} PVM selects ordinary guest kernel"
+  run_selection "${arch}-pvm" "${arch}" 1 1 1
+  assert_eq "$(readlink "${TMP_DIR}/${arch}-pvm/cube-kernel-scf/vmlinux")" "vmlinux-pvm" \
+    "${arch} PVM selects PVM guest kernel"
   assert_eq "$(tr -d '[:space:]' <"${TMP_DIR}/${arch}-pvm/cube-kernel-scf/version")" \
-    "sha256:$(file_sha256_hex "${TMP_DIR}/${arch}-pvm/cube-kernel-scf/vmlinux-bm")" \
-    "${arch} PVM marker follows ordinary guest kernel"
-  run_selection "${arch}-dual" "${arch}" 1 1 1
-  assert_eq "$(readlink "${TMP_DIR}/${arch}-dual/cube-kernel-scf/vmlinux")" "vmlinux-bm" \
-    "${arch} PVM ignores separate PVM artifact"
+    "sha256:$(file_sha256_hex "${TMP_DIR}/${arch}-pvm/cube-kernel-scf/vmlinux-pvm")" \
+    "${arch} PVM marker follows PVM guest kernel"
+  assert_fails "${arch} PVM rejects BM-only package" \
+    run_selection "${arch}-bm-only" "${arch}" 1 1 0
 done
 
 run_selection arm64-bm arm64 0 1 1
@@ -95,8 +94,8 @@ mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf"
 printf 'bm-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
 ln -s vmlinux-bm "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux"
 arm_diag="$(CUBE_HOST_ARCH=arm64 check_cube_kernel)"
-[[ "${arm_diag}" == *"PASS:cube_kernel_vmlinux_pvm:not required on arm64 PVM hosts"* ]] \
-  || fail_test "arm64 PVM diagnostic should accept missing PVM guest kernel"
+[[ "${arm_diag}" == *"FAIL:cube_kernel_vmlinux_pvm:"* ]] \
+  || fail_test "arm64 PVM diagnostic should reject missing PVM guest kernel"
 x86_diag="$(CUBE_HOST_ARCH=x86_64 check_cube_kernel)"
 [[ "${x86_diag}" == *"FAIL:cube_kernel_vmlinux_pvm:"* ]] \
   || fail_test "x86 PVM diagnostic should reject missing PVM guest kernel"
