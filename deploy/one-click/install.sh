@@ -1261,6 +1261,8 @@ select_installed_kernel_vmlinux() {
   fi
 
   ensure_file "${kernel_dir}/${target}"
+  [[ -s "${kernel_dir}/${target}" ]] \
+    || die "selected guest kernel is empty: ${kernel_dir}/${target}"
   ln -sfn "${target}" "${kernel_dir}/vmlinux"
   # CubeShim identifies the selected kernel through this sibling marker. Keep
   # it in lockstep with the active symlink; leaving the packaged BM digest here
@@ -1290,6 +1292,7 @@ inventory_kernel_content_variants() {
   for variant in bm pvm; do
     file="${src_dir}/vmlinux-${variant}"
     [[ -f "${file}" ]] || continue
+    [[ -s "${file}" ]] || die "guest kernel is empty: ${file}"
     digest="$(file_sha256_hex "${file}")" || die "cannot hash ${file}"
     short_key="sha256-${digest:0:12}"
     dst="${COMPONENT_VERSIONS_ROOT}/${name}/${short_key}"

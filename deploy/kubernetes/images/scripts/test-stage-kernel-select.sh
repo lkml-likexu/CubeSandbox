@@ -107,37 +107,18 @@ assert_eq "$(tr -d '[:space:]' < "${TOOLBOX_ROOT}/cube-kernel-scf/version")" \
   "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm")" \
   "kernel version marker follows selected bm variant"
 
-# arm64 images intentionally carry only the ordinary guest kernel. Host PVM
-# mode must not make component staging require a nonexistent guest variant.
+# arm_pvm requires the PVM guest kernel just like x86 PVM.
 TOOLBOX_ROOT="${TMP}/tb3c"
 STATE_DIR="${TMP}/st3c"
 mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
-printf 'arm64-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
+setup_kernels "${TOOLBOX_ROOT}/cube-kernel-scf"
 printf '1\n' >"${STATE_DIR}/effective-pvm"
 CUBE_HOST_ARCH=arm64 select_guest_kernel ""
-assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
-  "effective-pvm=1 falls back to ordinary guest kernel when pvm artifact is absent"
+assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-pvm" \
+  "arm_pvm selects the PVM guest kernel"
 assert_eq "$(tr -d '[:space:]' < "${TOOLBOX_ROOT}/cube-kernel-scf/version")" \
-  "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm")" \
-  "arm64 fallback marker follows ordinary guest kernel"
-
-TOOLBOX_ROOT="${TMP}/tb3d"
-STATE_DIR="${TMP}/st3d"
-mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
-printf 'aarch64-kernel\n' >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-bm"
-export CUBE_PVM_ENABLE=1
-CUBE_HOST_ARCH=aarch64 select_guest_kernel ""
-assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
-  "aarch64 alias falls back to ordinary guest kernel"
-
-TOOLBOX_ROOT="${TMP}/tb3g"
-STATE_DIR="${TMP}/st3g"
-mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
-setup_kernels "${TOOLBOX_ROOT}/cube-kernel-scf"
-export CUBE_PVM_ENABLE=1
-CUBE_HOST_ARCH=arm64 select_guest_kernel ""
-assert_eq "$(basename "$(readlink "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux")")" "vmlinux-bm" \
-  "arm64 PVM always uses ordinary guest kernel when both variants exist"
+  "sha256:$(file_sha256_hex "${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-pvm")" \
+  "arm_pvm marker follows the PVM guest kernel"
 
 TOOLBOX_ROOT="${TMP}/tb3e"
 STATE_DIR="${TMP}/st3e"
@@ -152,7 +133,7 @@ TOOLBOX_ROOT="${TMP}/tb3f"
 STATE_DIR="${TMP}/st3f"
 mkdir -p "${TOOLBOX_ROOT}/cube-kernel-scf" "${STATE_DIR}"
 export CUBE_PVM_ENABLE=1
-assert_fails "arm64 fallback still requires an ordinary guest kernel" \
+assert_fails "arm_pvm requires vmlinux-pvm" \
   env CUBE_HOST_ARCH=arm64 TOOLBOX_ROOT="${TOOLBOX_ROOT}" STATE_DIR="${STATE_DIR}" \
   bash -c "source <(sed '/^main \"\$@\"/d' '${ENTRY}'); select_guest_kernel ''"
 
@@ -358,6 +339,15 @@ if ls -d "${COMPONENT_VERSIONS_ROOT}/cube-kernel-scf/"*@* >/dev/null 2>&1; then
 fi
 printf 'ok: kernel dual content inventory with variant markers\n'
 
+# An empty optional variant must never become the well-known empty digest
+# inventory (sha256-e3b0c44298fc), which component pinning would treat as a
+# real kernel and hand to the VMM.
+empty_ksrc="${TMP}/inv-kernel-empty"
+mkdir -p "${empty_ksrc}"
+: >"${empty_ksrc}/vmlinux-pvm"
+assert_fails "empty kernel variant is not inventoried" \
+  inventory_kernel_content_variants "${empty_ksrc}" "cube-kernel-scf"
+
 # --- kernel version.json digest rewrite (legacy tag-only JSON) ---
 kdst="${TMP}/kernel-json"
 mkdir -p "${kdst}"
@@ -387,5 +377,15 @@ ensure_component_version_json cube-kernel "${kdst}"
 cmp -s "${kdst}/version.json.before" "${kdst}/version.json" \
   || { echo "FAIL: complete digest JSON should not be rewritten"; exit 1; }
 printf 'ok: complete kernel version.json left unchanged\n'
+
+# A syntactically complete manifest can still describe stale bytes (for
+# example, the empty PVM artifact that produced sha256:e3b0...). Recompute it
+# when the artifact at the same path changes.
+printf 'repaired-pvm-kernel-bytes\n' >"${kdst}/vmlinux-pvm"
+repaired_pvm_digest="$(file_sha256_hex "${kdst}/vmlinux-pvm")"
+ensure_component_version_json cube-kernel "${kdst}"
+grep -q "\"digest_sha256\": \"sha256:${repaired_pvm_digest}\"" "${kdst}/version.json" \
+  || { echo "FAIL: stale pvm digest not refreshed"; exit 1; }
+printf 'ok: stale kernel digest refreshed after artifact replacement\n'
 
 printf 'ALL PASS\n'

@@ -413,15 +413,17 @@ check_cube_kernel() {
   lsmod 2>/dev/null | grep -qE '^kvm_pvm[[:space:]]' && pvm_host=1
 
   # Always check the generic vmlinux (required for KVM/nested)
-  if [[ -f "${kernel_dir}/vmlinux" ]]; then
+  if [[ -s "${kernel_dir}/vmlinux" ]]; then
     local sz; sz="$(du -sh "${kernel_dir}/vmlinux" 2>/dev/null | cut -f1)"
     pass "cube_kernel_vmlinux" "${kernel_dir}/vmlinux (${sz})"
+  elif [[ -f "${kernel_dir}/vmlinux" ]]; then
+    fail "cube_kernel_vmlinux" "${kernel_dir}/vmlinux is empty"
   else
     fail "cube_kernel_vmlinux" "${kernel_dir}/vmlinux not found"
   fi
 
   # Check PVM variant
-  if [[ -f "${kernel_dir}/vmlinux-pvm" ]]; then
+  if [[ -s "${kernel_dir}/vmlinux-pvm" ]]; then
     local sz; sz="$(du -sh "${kernel_dir}/vmlinux-pvm" 2>/dev/null | cut -f1)"
     if [[ "${pvm_host}" -eq 1 ]]; then
       pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz}) — PVM host, this variant will be used"
@@ -429,7 +431,9 @@ check_cube_kernel() {
       pass "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm (${sz})"
     fi
   else
-    if [[ "${pvm_host}" -eq 1 ]]; then
+    if [[ -f "${kernel_dir}/vmlinux-pvm" ]]; then
+      fail "cube_kernel_vmlinux_pvm" "${kernel_dir}/vmlinux-pvm is empty"
+    elif [[ "${pvm_host}" -eq 1 ]]; then
       fail "cube_kernel_vmlinux_pvm" \
         "${kernel_dir}/vmlinux-pvm not found — required on PVM host for guest VM boot"
     else

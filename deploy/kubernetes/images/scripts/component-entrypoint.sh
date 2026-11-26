@@ -127,6 +127,9 @@ inventory_kernel_content_variants() {
   for variant in bm pvm; do
     file="${src}/vmlinux-${variant}"
     [[ -f "${file}" ]] || continue
+    # Empty optional artifacts are easy to package accidentally and hash to the
+    # valid-looking identity e3b0c442... . Never publish one as bootable.
+    [[ -s "${file}" ]] || fail "guest kernel is empty: ${file}"
     digest="$(file_sha256_hex "${file}")" || fail "cannot hash ${file}"
     short_key="sha256-${digest:0:12}"
     dst="${COMPONENT_VERSIONS_ROOT}/${rel}/${short_key}"
@@ -462,25 +465,27 @@ write_atomic() {
   mv -f "${tmp}" "${dest}"
 }
 
-# True when kernel version.json is missing digests for present vmlinux variants.
+# True when kernel version.json is missing a present variant's current digest.
+# Merely having a syntactically valid digest is insufficient: an upgraded
+# artifact may replace an earlier empty/truncated file at the same path.
 kernel_version_json_needs_digest_rewrite() {
   local dst="$1"
   local json="${dst}/version.json"
-  local collapsed=""
+  local collapsed="" variant file digest
 
   [[ -f "${dst}/vmlinux-bm" || -f "${dst}/vmlinux-pvm" ]] || return 1
   if [[ ! -f "${json}" ]]; then
     return 0
   fi
   collapsed="$(tr '\n' ' ' < "${json}" 2>/dev/null || true)"
-  if [[ -f "${dst}/vmlinux-bm" ]]; then
-    printf '%s' "${collapsed}" | grep -Eq '"bm"[[:space:]]*:[[:space:]]*\{[^}]*"digest_sha256"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]{64}"' \
+  for variant in bm pvm; do
+    file="${dst}/vmlinux-${variant}"
+    [[ -f "${file}" ]] || continue
+    digest="$(file_sha256_hex "${file}")" || return 0
+    printf '%s' "${collapsed}" | grep -Eq \
+      "\"${variant}\"[[:space:]]*:[[:space:]]*\\{[^}]*\"digest_sha256\"[[:space:]]*:[[:space:]]*\"sha256:${digest}\"" \
       || return 0
-  fi
-  if [[ -f "${dst}/vmlinux-pvm" ]]; then
-    printf '%s' "${collapsed}" | grep -Eq '"pvm"[[:space:]]*:[[:space:]]*\{[^}]*"digest_sha256"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]{64}"' \
-      || return 0
-  fi
+  done
   return 1
 }
 
@@ -907,17 +912,10 @@ select_guest_kernel() {
   fi
   # 5) first-install default
   [[ -n "${target}" ]] || target="vmlinux-bm"
-  # arm64 PVM changes host KVM semantics but uses the ordinary guest kernel;
-  # its kernel image intentionally has no separate vmlinux-pvm artifact.
-  if [[ "${target}" == "vmlinux-pvm" ]]; then
-    case "${CUBE_HOST_ARCH:-$(uname -m)}" in
-      aarch64|arm64)
-        target="vmlinux-bm"
-        log "arm64 PVM host uses ordinary guest kernel: ${dir}/${target}"
-        ;;
-    esac
-  fi
+  # PVM requires its matching guest kernel on every architecture, including
+  # arm_pvm. Do not silently substitute vmlinux-bm on arm64.
   [[ -f "${dir}/${target}" ]] || fail "missing guest kernel: ${dir}/${target}"
+  [[ -s "${dir}/${target}" ]] || fail "selected guest kernel is empty: ${dir}/${target}"
   ln -sfn "${target}" "${dir}/vmlinux"
   # CubeShim reads this marker beside vmlinux when capturing/restoring snapshot
   # metadata. It must describe the selected variant, not the packaged default.

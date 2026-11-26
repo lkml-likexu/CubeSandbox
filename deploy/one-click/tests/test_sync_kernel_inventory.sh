@@ -70,5 +70,18 @@ test_dual_variant_content_inventory() {
   [[ "${count}" -eq 2 ]] || fail "expected exactly 2 inventory dirs, got ${count}"
 }
 
+test_empty_variant_is_rejected() {
+  local src="${TMP_DIR}/empty/cube-kernel-scf"
+  mkdir -p "${src}"
+  : > "${src}/vmlinux-pvm"
+
+  if (inventory_kernel_content_variants "${src}") >/dev/null 2>&1; then
+    fail "empty PVM kernel was inventoried"
+  fi
+  [[ ! -e "${COMPONENT_VERSIONS_ROOT}/cube-kernel-scf/sha256-e3b0c44298fc" ]] \
+    || fail "empty-digest kernel inventory was created"
+}
+
 test_dual_variant_content_inventory
+test_empty_variant_is_rejected
 echo "ALL PASS"

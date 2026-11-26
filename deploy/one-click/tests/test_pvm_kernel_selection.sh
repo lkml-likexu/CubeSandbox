@@ -58,6 +58,13 @@ assert_eq "$(tr -d '[:space:]' <"${TMP_DIR}/x86-pvm/cube-kernel-scf/version")" \
 
 assert_fails "x86 PVM rejects BM-only package" run_selection x86-bm-only x86_64 1 1 0
 
+INSTALL_PREFIX="${TMP_DIR}/x86-empty-pvm"
+mkdir -p "${INSTALL_PREFIX}/cube-kernel-scf"
+printf 'bm-kernel\n' >"${INSTALL_PREFIX}/cube-kernel-scf/vmlinux-bm"
+: >"${INSTALL_PREFIX}/cube-kernel-scf/vmlinux-pvm"
+assert_fails "PVM rejects an empty guest kernel" \
+  env CUBE_HOST_ARCH=x86_64 CUBE_PVM_ENABLE=1 bash -c "$(declare -f ensure_file die log select_installed_kernel_vmlinux); INSTALL_PREFIX='${INSTALL_PREFIX}'; select_installed_kernel_vmlinux"
+
 for arch in arm64 aarch64; do
   run_selection "${arch}-pvm" "${arch}" 1 1 1
   assert_eq "$(readlink "${TMP_DIR}/${arch}-pvm/cube-kernel-scf/vmlinux")" "vmlinux-pvm" \
@@ -99,5 +106,10 @@ arm_diag="$(CUBE_HOST_ARCH=arm64 check_cube_kernel)"
 x86_diag="$(CUBE_HOST_ARCH=x86_64 check_cube_kernel)"
 [[ "${x86_diag}" == *"FAIL:cube_kernel_vmlinux_pvm:"* ]] \
   || fail_test "x86 PVM diagnostic should reject missing PVM guest kernel"
+
+: >"${TOOLBOX_ROOT}/cube-kernel-scf/vmlinux-pvm"
+arm_empty_diag="$(CUBE_HOST_ARCH=arm64 check_cube_kernel)"
+[[ "${arm_empty_diag}" == *"FAIL:cube_kernel_vmlinux_pvm:"*"is empty"* ]] \
+  || fail_test "arm_pvm diagnostic should reject empty PVM guest kernel"
 
 echo "PVM kernel selection tests OK"
