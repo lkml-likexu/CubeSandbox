@@ -10,11 +10,12 @@ import ast
 import pytest
 
 from framework.restart_policy import (
-    CRASH_COMMAND,
     EXIT_ERROR_LAUNCH,
     EXIT_ERROR_PATH,
     EXIT_ERROR_SCRIPT,
     EXIT_ZERO_COMMAND,
+    STOP_PROBE_COMMAND,
+    crash_guest,
     restart_status,
     signal_guest,
 )
@@ -71,17 +72,29 @@ def test_restart_status_snake_case_alias() -> None:
     }
 
 
-def test_crash_command_validates_then_backgrounds_sysrq() -> None:
-    assert "test -w /proc/sysrq-trigger" in CRASH_COMMAND
-    assert "sync" in CRASH_COMMAND
-    assert "sleep 1" in CRASH_COMMAND
-    assert "echo c > /proc/sysrq-trigger" in CRASH_COMMAND
-    assert CRASH_COMMAND.rstrip().endswith("&'")
-
-
 def test_exit_zero_command_backgrounds_sigterm() -> None:
     assert "kill -TERM 1" in EXIT_ZERO_COMMAND
     assert EXIT_ZERO_COMMAND.rstrip().endswith("&")
+
+
+def test_stop_probe_command_matches_envd_process_name_exactly() -> None:
+    assert 'cat "$d/comm"' in STOP_PROBE_COMMAND
+    assert '[ "$comm" = envd ]' in STOP_PROBE_COMMAND
+    assert '*envd*' not in STOP_PROBE_COMMAND
+    assert 'sleep 1; kill $pids' in STOP_PROBE_COMMAND
+    assert '[ -n "$pids" ] || exit 1' in STOP_PROBE_COMMAND
+
+
+def test_crash_guest_stops_liveness_endpoint(monkeypatch) -> None:
+    called = {}
+
+    def _stop(adapter, *, timeout):
+        called.update(adapter=adapter, timeout=timeout)
+
+    monkeypatch.setattr("framework.restart_policy.stop_liveness_endpoint", _stop)
+    adapter = object()
+    crash_guest(adapter, timeout=7)
+    assert called == {"adapter": adapter, "timeout": 7}
 
 
 class _SignalAdapter:

@@ -387,8 +387,8 @@ def test_healthy_sandbox_not_restarted(sdk_sandbox, sdk_e2e_config):
 def test_guest_crash_restarts_same_sandbox(sdk_sandbox, sdk_e2e_config, policy):
     """A guest crash restarts under OnFailure and Always, same id and disk.
 
-    The sysrq panic surfaces as a shim exit without a status, so the reason is
-    the abnormal exit reported as Error and the exit code is -1.
+    The helper stops envd and the configured liveness probe converts that
+    data-plane failure into a cold guest restart.
     """
     sandbox_id = sdk_sandbox.sandbox_id
     write_durable_marker(sdk_sandbox, _MARKER, timeout=sdk_e2e_config.command_timeout)

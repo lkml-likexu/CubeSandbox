@@ -763,6 +763,13 @@ _RESTART_CREATE = {
         "multiplier": 1,
         "maxRestarts": 3,
     },
+    "livenessProbe": {
+        "httpGet": {"path": "/health", "port": 49983},
+        "initialDelaySecond": 1,
+        "periodSecond": 1,
+        "failureThreshold": 1,
+        "probeTimeoutSecond": 1,
+    },
     "timeout": 600,
 }
 

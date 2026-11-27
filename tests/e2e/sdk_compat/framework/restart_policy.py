@@ -3,8 +3,8 @@
 
 """Helpers for node-local restart-policy e2e cases.
 
-Status is read from CubeAPI ``restartStatus``. A guest crash is triggered
-from the data plane with sysrq so the suite does not need host access.
+Status is read from CubeAPI ``restartStatus``. A guest failure is triggered
+through its liveness probe so the suite does not need host access.
 """
 
 from __future__ import annotations
@@ -16,12 +16,6 @@ from typing import Any
 from framework.lifecycle import wait_until
 
 MARKER_PATH = "/root/cube-e2e-restart-marker"
-# Validate the trigger synchronously, then delay the panic so run_command returns
-# and callers can observe the transient BackOff state before the guest restarts.
-CRASH_COMMAND = (
-    "sh -c 'test -w /proc/sysrq-trigger || exit 1; sync; "
-    "(sleep 1; echo c > /proc/sysrq-trigger) >/dev/null 2>&1 &'"
-)
 # Container init is uvicorn. It handles SIGTERM and exits 0. The kernel drops
 # SIGKILL sent to a pid-namespace init, so kill -9 1 does not end this guest.
 EXIT_ZERO_COMMAND = "sh -c 'sleep 1; kill -TERM 1' >/dev/null 2>&1 &"
@@ -169,13 +163,16 @@ finally:
         except OSError:
             pass
 """
-# Stop envd without killing the container init, so the default liveness probe
-# fails while the main process is still the one that was started.
+# Stop envd without killing the container init, so its liveness probe fails.
+# Match the process name exactly: this shell's command line also contains the
+# word "envd", so a cmdline substring match can kill the trigger itself.
 STOP_PROBE_COMMAND = (
-    "sh -c 'for f in /proc/[0-9]*/cmdline; do "
-    "cmd=$(tr \"\\0\" \" \" < \"$f\" 2>/dev/null || true); "
-    "case \"$cmd\" in *envd*) kill \"$(basename \"$(dirname \"$f\")\")\";; esac; "
-    "done'"
+    "sh -c 'pids=; for d in /proc/[0-9]*; do "
+    "[ \"$d\" = \"/proc/$$\" ] && continue; "
+    "comm=$(cat \"$d/comm\" 2>/dev/null || true); "
+    "[ \"$comm\" = envd ] && pids=\"$pids ${d##*/}\"; "
+    "done; [ -n \"$pids\" ] || exit 1; "
+    "(sleep 1; kill $pids) >/dev/null 2>&1 &'"
 )
 
 _STATUS_ALIASES = {
@@ -262,8 +259,14 @@ def signal_guest(
 
 
 def crash_guest(adapter: Any, *, timeout: int) -> None:
-    """Ask the guest to panic."""
-    signal_guest(adapter, CRASH_COMMAND, timeout=timeout)
+    """Crash the guest by stopping envd and letting its liveness probe fail.
+
+    ``/proc/sysrq-trigger`` is hidden by the PVM guest runtime, so a shell
+    command cannot panic this environment. Every crash-based case provisions a
+    fast liveness probe; closing envd's command/health endpoint provides the
+    same abnormal guest exit through the supported restart-policy path.
+    """
+    stop_liveness_endpoint(adapter, timeout=timeout)
 
 
 def exit_main_zero(adapter: Any, *, timeout: int) -> None:
