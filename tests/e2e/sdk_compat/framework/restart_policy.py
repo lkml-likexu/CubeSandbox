@@ -16,8 +16,12 @@ from typing import Any
 from framework.lifecycle import wait_until
 
 MARKER_PATH = "/root/cube-e2e-restart-marker"
-# Background the signal so the command can return before the guest dies.
-CRASH_COMMAND = "sh -c 'sleep 1; echo c > /proc/sysrq-trigger' >/dev/null 2>&1 &"
+# Validate the trigger synchronously, then delay the panic so run_command returns
+# and callers can observe the transient BackOff state before the guest restarts.
+CRASH_COMMAND = (
+    "sh -c 'test -w /proc/sysrq-trigger || exit 1; sync; "
+    "(sleep 1; echo c > /proc/sysrq-trigger) >/dev/null 2>&1 &'"
+)
 # Container init is uvicorn. It handles SIGTERM and exits 0. The kernel drops
 # SIGKILL sent to a pid-namespace init, so kill -9 1 does not end this guest.
 EXIT_ZERO_COMMAND = "sh -c 'sleep 1; kill -TERM 1' >/dev/null 2>&1 &"
@@ -31,6 +35,7 @@ import ctypes
 import ctypes.util
 import os
 import platform
+import signal
 
 PTRACE_PEEKTEXT = 1
 PTRACE_POKETEXT = 4
@@ -38,9 +43,15 @@ PTRACE_CONT = 7
 PTRACE_GETREGS = 12
 PTRACE_SETREGS = 13
 PTRACE_ATTACH = 16
+PTRACE_SYSCALL = 24
+PTRACE_SETOPTIONS = 0x4200
 PTRACE_GETREGSET = 0x4204
 PTRACE_SETREGSET = 0x4205
+PTRACE_GET_SYSCALL_INFO = 0x420E
+PTRACE_O_TRACESYSGOOD = 1
+PTRACE_SYSCALL_INFO_ENTRY = 1
 NT_PRSTATUS = 1
+NT_ARM_SYSTEM_CALL = 0x404
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 libc.ptrace.restype = ctypes.c_long
@@ -93,19 +104,45 @@ def inject_x86_64(pid):
 
 
 def inject_aarch64(pid):
+    # PVM does not currently support remote text reads/writes reliably. Replace
+    # the next real syscall at entry instead, including arm64's authoritative
+    # NT_ARM_SYSTEM_CALL register rather than only the userspace x8 register.
+    ptrace(PTRACE_SETOPTIONS, pid, data=PTRACE_O_TRACESYSGOOD)
+    pending_signal = 0
+    while True:
+        ptrace(PTRACE_SYSCALL, pid, data=pending_signal)
+        _, status = os.waitpid(pid, 0)
+        if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+            raise RuntimeError("PID 1 exited before syscall injection")
+        if not os.WIFSTOPPED(status):
+            raise RuntimeError(f"unexpected wait status: {status:#x}")
+        stop_signal = os.WSTOPSIG(status)
+        if stop_signal == (signal.SIGTRAP | 0x80):
+            info = ctypes.create_string_buffer(128)
+            size = ptrace(
+                PTRACE_GET_SYSCALL_INFO,
+                pid,
+                ctypes.sizeof(info),
+                ctypes.byref(info),
+            )
+            if size >= 1 and info.raw[0] == PTRACE_SYSCALL_INFO_ENTRY:
+                break
+            pending_signal = 0
+        elif stop_signal in (signal.SIGSTOP, signal.SIGTRAP):
+            pending_signal = 0
+        else:
+            pending_signal = stop_signal
+
     regs = Arm64Regs()
     iov = Iovec(ctypes.addressof(regs), ctypes.sizeof(regs))
     ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, ctypes.byref(iov))
-    addr = regs.pc & ~7
-    original = ptrace(PTRACE_PEEKTEXT, pid, addr)
-    word = bytearray(int(original & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little"))
-    offset = regs.pc - addr
-    word[offset:offset + 4] = (0xD4000001).to_bytes(4, "little")  # svc #0
-    ptrace(PTRACE_POKETEXT, pid, addr, int.from_bytes(word, "little"))
     regs.regs[0] = 1
     regs.regs[8] = 94
     iov = Iovec(ctypes.addressof(regs), ctypes.sizeof(regs))
     ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, ctypes.byref(iov))
+    syscallno = ctypes.c_int(94)
+    iov = Iovec(ctypes.addressof(syscallno), ctypes.sizeof(syscallno))
+    ptrace(PTRACE_SETREGSET, pid, NT_ARM_SYSTEM_CALL, ctypes.byref(iov))
 
 
 pid = 1

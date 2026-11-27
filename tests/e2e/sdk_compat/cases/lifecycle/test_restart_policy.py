@@ -68,12 +68,12 @@ _ONE_RESTART = {
     "maxRestarts": 1,
 }
 # initial * multiplier^count, then cap. jitter 0.1 matches the default.
-# Small numbers keep the run short; the assertions still prove the interval
-# starts at the configured value, grows by the multiplier and stops at the cap.
+# Keep the first window long enough for asynchronously reported BackOff state to
+# reach CubeAPI before Cubelet starts the cold restart.
 _SCHEDULE = {
-    "initialIntervalSecond": 3,
-    "multiplier": 4,
-    "maxIntervalSecond": 6,
+    "initialIntervalSecond": 10,
+    "multiplier": 2,
+    "maxIntervalSecond": 20,
     "maxRestarts": 5,
     "jitter": 0.1,
 }
@@ -680,7 +680,7 @@ def test_backoff_follows_configured_schedule(sdk_sandbox, sdk_e2e_config):
         timeout=sdk_e2e_config.restart_policy_wait,
         interval=0.5,
     )
-    _assert_backoff(first, config=sdk_e2e_config, initial=3, multiplier=4, cap=6, jitter=0.1)
+    _assert_backoff(first, config=sdk_e2e_config, initial=10, multiplier=2, cap=20, jitter=0.1)
     wait_until_data_plane_ready(
         sdk_sandbox,
         timeout=sdk_e2e_config.restart_policy_wait,
@@ -706,7 +706,7 @@ def test_backoff_follows_configured_schedule(sdk_sandbox, sdk_e2e_config):
         timeout=sdk_e2e_config.restart_policy_wait,
         interval=0.5,
     )
-    _assert_backoff(second, config=sdk_e2e_config, initial=3, multiplier=4, cap=6, jitter=0.1)
+    _assert_backoff(second, config=sdk_e2e_config, initial=10, multiplier=2, cap=20, jitter=0.1)
     wait_for_restart_status(
         sdk_sandbox,
         lambda item: bool(item)

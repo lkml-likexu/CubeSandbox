@@ -90,6 +90,12 @@ _FAST_PROBE = {
     "failureThreshold": 1,
     "probeTimeoutSecond": 1,
 }
+_RESTART_CREATE_OPTIONS = {
+    "restartPolicy": "OnFailure",
+    "restartBackoff": _ONE_RESTART,
+    "livenessProbe": _FAST_PROBE,
+    "timeout": 1800,
+}
 
 
 def _run(adapter, command: str, *, timeout: int):
@@ -274,7 +280,10 @@ def _restore_from(adapter, backend: str, config, snapshot_id: str, role: str):
                 backend,
                 config,
                 metadata={"test_suite": "sdk_compat", "test_role": role},
-                create_options={"template": snapshot_id},
+                create_options={
+                    **_RESTART_CREATE_OPTIONS,
+                    "template": snapshot_id,
+                },
             )
         except Exception as exc:  # noqa: BLE001 - classify by message
             last = exc

@@ -71,10 +71,12 @@ def test_restart_status_snake_case_alias() -> None:
     }
 
 
-def test_crash_command_returns_before_sysrq() -> None:
+def test_crash_command_validates_then_backgrounds_sysrq() -> None:
+    assert "test -w /proc/sysrq-trigger" in CRASH_COMMAND
+    assert "sync" in CRASH_COMMAND
     assert "sleep 1" in CRASH_COMMAND
-    assert "sysrq-trigger" in CRASH_COMMAND
-    assert CRASH_COMMAND.rstrip().endswith("&")
+    assert "echo c > /proc/sysrq-trigger" in CRASH_COMMAND
+    assert CRASH_COMMAND.rstrip().endswith("&'")
 
 
 def test_exit_zero_command_backgrounds_sigterm() -> None:
@@ -118,6 +120,10 @@ def test_exit_error_script_calls_exit_group_on_supported_architectures() -> None
     assert 'machine in ("aarch64", "arm64")' in EXIT_ERROR_SCRIPT
     assert "regs.regs[8] = 94" in EXIT_ERROR_SCRIPT
     assert "regs.regs[0] = 1" in EXIT_ERROR_SCRIPT
-    assert "0xD4000001" in EXIT_ERROR_SCRIPT
+    assert "PTRACE_SYSCALL" in EXIT_ERROR_SCRIPT
+    assert "PTRACE_GET_SYSCALL_INFO" in EXIT_ERROR_SCRIPT
+    assert "NT_ARM_SYSTEM_CALL" in EXIT_ERROR_SCRIPT
+    assert "ptrace(PTRACE_PEEKTEXT, pid, addr)" not in EXIT_ERROR_SCRIPT
+    assert "svc_pair" not in EXIT_ERROR_SCRIPT
     assert "unsupported guest architecture" in EXIT_ERROR_SCRIPT
     assert EXIT_ERROR_LAUNCH == f"python3 {EXIT_ERROR_PATH}"
